@@ -83,7 +83,9 @@ leaving the data available if the branch design firms up later.
 | File formats | None. This is a direct database read, not a file drop. No CSV, JSON, or Excel is involved. |
 | Connection | Encrypted (SSL) connection over TCP, using a dedicated read-only database login |
 | Objects created in it by the pipeline | **None.** The pipeline holds no write permission and issues no DDL against this database. |
-| Existing indexes used | `sales_transactions_status_created_idx` on `(status, created_at DESC)`; `sales_transaction_items_transaction_created_idx` on `(transaction_id)`; `inventory_items_stock_reorder_idx` on `(stock, reorder_level)` |
+| Existing indexes used | `sales_transactions_status_created_idx` on `(status, created_at DESC)`; `sales_transaction_items_transaction_idx` on `(transaction_id)`; `inventory_items_stock_reorder_idx` on `(stock, reorder_level)` |
+
+**Revision note (v1.1).** Earlier revisions named `sales_transaction_items_transaction_created_idx` in the row above. That index was dropped on 21 September 2026 as a duplicate of `sales_transaction_items_transaction_idx` (`supabase/migrations/20260921000600_drop_duplicate_transaction_items_index.sql`); both were single-column indexes on `transaction_id`, so query behaviour is unchanged and only the name was wrong.
 
 ### 1.3 Extraction method
 
@@ -337,6 +339,11 @@ sensible value is a Transformation question and is not tested here.
 **How severity is used.** A critical failure stops the run before handover. A warning does not.
 The full decision table is in Section 7.
 
+**The closed-day flag.** Check V8 tolerates a zero-row day only when the operator has flagged
+that date as a closed day. The flag is supplied as a run parameter for that date; it is never
+inferred from the data. A zero-row day without the flag is a warning, so a broken window is
+never mistaken for a quiet day.
+
 **On rejects at this stage.** Rejected rows here are only structural failures — a null primary
 key, a line item whose parent sale is missing. In a healthy run `rows_rejected` is `0`.
 Business-rule rejects (a negative amount, an unknown status) belong to the Check stage of the
@@ -347,9 +354,10 @@ extraction broke" from "the shop data is bad".
 
 ## 4. Extraction Metadata and Log Specification
 
-Every run writes one row to the `pipeline_runs` table in the pipeline's own `psync_analytics`
-database, and one JSON log file on the pipeline host. The fields below
-are the contract.
+Every run writes to the `pipeline_runs` table in the pipeline's own `psync_analytics`
+database, and one JSON log file on the pipeline host. The grain is **one row per source table
+per run, plus one run-level summary row** that carries the run's overall status and validation
+summary. The fields below are the contract.
 
 | Field | Purpose | Example |
 | --- | --- | --- |
@@ -676,7 +684,16 @@ Every problem below is specific to this source system, not a generic list.
 
 ---
 
-## 9. References
+## 9. Revision history
+
+| Version | Date | Change |
+| --- | --- | --- |
+| 1.0 | 5 October 2026 | Initial extraction specification. |
+| 1.1 | 14 October 2026 | Corrected the index name in Section 1.2 (`sales_transaction_items_transaction_idx`, after the duplicate index was dropped on 21 September 2026); stated the `pipeline_runs` grain in Section 4 (one row per source table per run, plus one run-level summary row); stated that the closed-day flag in Section 3 is an operator-supplied run parameter. Extraction scope, tables, columns, validation criteria and acceptance rules are unchanged. |
+
+---
+
+## 10. References
 
 - Bulan, L. J. D., Rendal, R. C., & Vidal, M. E. Z. (2026, September 9). *Data Pipeline Technology Research for PRINTSYNC*. BAT-405 Laboratory Activity 1.
 - Bulan, L. J. D., Rendal, R. C., & Vidal, M. E. Z. (2026, September 16). *Technical Metadata Documentation for PRINTSYNC*. BAT-405 Laboratory Activity 2.
