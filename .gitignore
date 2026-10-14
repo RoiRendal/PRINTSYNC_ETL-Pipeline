@@ -1,0 +1,37 @@
+issues/
+Implementation-Plan-and-Issue-Breakdown.md
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Python build and cache artefacts
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Secrets and local configuration - .env holds real credentials, .env.example does not
+.env
+
+# Prefect local state
+.prefect/
+
+# Pipeline output. Logs and the Parquet archive live on the pipeline host, never in the repo
+# (doc section 5).
+logs/
+archive/
+
+# Editors and operating systems
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Local assistant workspace notes (kept on disk, not part of the deliverable)
+.workbuddy-ai/
