@@ -9,13 +9,21 @@ from psync_extract.validation.result import CheckResult, Severity, Status
 from psync_extract.validation.v1 import check_source_connection
 from psync_extract.validation.v2 import check_schema_drift
 from psync_extract.validation.v3 import RunResolution, check_window_resolution
+from psync_extract.validation.v4 import (
+    SettingsResolution,
+    ShopSettings,
+    check_shop_settings,
+)
 
 __all__ = [
     "CheckResult",
     "RunResolution",
+    "SettingsResolution",
     "Severity",
+    "ShopSettings",
     "Status",
     "check_schema_drift",
+    "check_shop_settings",
     "check_source_connection",
     "check_window_resolution",
 ]
