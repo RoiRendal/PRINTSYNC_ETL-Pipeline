@@ -8,11 +8,14 @@ decided by its severity and the rules in section 7.1, not here.
 from psync_extract.validation.result import CheckResult, Severity, Status
 from psync_extract.validation.v1 import check_source_connection
 from psync_extract.validation.v2 import check_schema_drift
+from psync_extract.validation.v3 import RunResolution, check_window_resolution
 
 __all__ = [
     "CheckResult",
+    "RunResolution",
     "Severity",
     "Status",
     "check_schema_drift",
     "check_source_connection",
+    "check_window_resolution",
 ]
