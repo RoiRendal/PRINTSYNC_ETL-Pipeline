@@ -404,11 +404,18 @@ summary. The fields below are the contract.
 | **Operational log retention** | **90 days**, kept hot in the `pipeline_runs` table and as JSON files. Ninety days covers roughly three months of nightly runs, which is more than enough to investigate a failure that someone notices and reports. |
 | **Audit record retention** | **24 months.** The per-run summary — `run_key`, `business_date`, `status`, `rows_read`, `rows_extracted`, `rows_rejected`, and `validation_results` — is kept far longer than the detailed log, because it is the evidence that a published figure was produced correctly. |
 | **Justification** | Operational detail is only useful while a problem is fresh. Audit evidence has to outlive it, because a question about last year's numbers arrives long after anyone would think to check. |
-| **Storage location** | Run rows in the `psync_analytics` database, which the pipeline owns — never in the PRINTSYNC database. JSON log files and that night's Parquet archive sit on the pipeline host's filesystem. |
+| **Storage location** | Run rows in the `psync_analytics` database, which the pipeline owns — never in the PRINTSYNC database. JSON log files sit on the pipeline host's filesystem, one file per run. |
 | **Access permissions** | Write: the pipeline's service login only. Read: the analytics and development team. The pipeline's database login is read-only on `public` and cannot alter operational data. Logs contain no customer personal data — only identifiers, counts, and timestamps. |
-| **Archiving** | At 90 days, detailed JSON logs move to compressed archive storage and the database rows are pruned. Audit summaries stay in the database. |
+| **Archiving** | At 90 days, detailed JSON logs are deleted and the per-table rows are pruned from `pipeline_runs`. The run-level audit row stays in the database for 24 months. No compressed archive is produced — see the note below. |
 | **Deletion** | Logs are **never** deleted before the retention period expires, and never while a run is under investigation or a recovery is in progress. Deletion after the period is an automated job, not a manual one, so it cannot be forgotten or done early by hand. |
 | **Operational versus audit** | Kept deliberately separate. Operational logs are disposable detail, deleted at 90 days. Audit records are the accountability trail, kept for 24 months. Conflating the two is how teams end up either hoarding everything or deleting evidence. |
+
+**On the archive.** Earlier revisions mentioned "that night's Parquet archive" once, in the storage
+row above, without defining its format, partitioning, contents or consumer. **No archive writer is
+built.** The extraction stage's promise is the staging tables and the run record, and inventing an
+archive format would be a specification this document never made. If an archive is wanted later,
+this section defines the format first (§6.4) and then it is implemented — the same rule that governs
+every other change to the contract.
 
 ---
 
@@ -534,6 +541,11 @@ The rule is: **fail loudly, never guess.**
 | The source cannot be reached (V1) | **RETRY** | Retry 3 times at 5-minute intervals. Still failing after that: REJECTED, alert the team. |
 | `run_key` already completed (V3) | **SKIPPED** | Stop without error. The day is already done; nothing to redo. |
 | Rejected rows exceed 1% of `rows_read` | **MANUAL REVIEW** | Hold the pipeline. A rejection rate that high means the source changed, not that the data is merely messy. |
+
+**Who retries.** The decision engine reports `RETRY`; it does not retry by itself. The policy —
+`RETRY_COUNT` attempts, `RETRY_BACKOFF_SECONDS` apart — belongs to the orchestration layer, which
+re-invokes the run. Keeping the two apart is what stops a slow source being mistaken for a broken
+one: the pipeline says *why* it stopped, and the scheduler decides whether to try again.
 
 ### 7.2 Who decides
 
@@ -690,6 +702,7 @@ Every problem below is specific to this source system, not a generic list.
 | --- | --- | --- |
 | 1.0 | 5 October 2026 | Initial extraction specification. |
 | 1.1 | 14 October 2026 | Corrected the index name in Section 1.2 (`sales_transaction_items_transaction_idx`, after the duplicate index was dropped on 21 September 2026); stated the `pipeline_runs` grain in Section 4 (one row per source table per run, plus one run-level summary row); stated that the closed-day flag in Section 3 is an operator-supplied run parameter. Extraction scope, tables, columns, validation criteria and acceptance rules are unchanged. |
+| 1.2 | 25 October 2026 | Removed the unspecified Parquet archive from Section 5 and stated that operational detail is deleted at 90 days rather than archived; added a note to Section 7.1 that `RETRY` is reported by the pipeline and performed by the orchestration layer. Both changes make the document describe what was built. Extraction scope, tables, columns, validation criteria and acceptance rules are unchanged. |
 
 ---
 
