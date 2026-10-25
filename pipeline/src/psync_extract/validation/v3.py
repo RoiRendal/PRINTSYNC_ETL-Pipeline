@@ -49,10 +49,22 @@ class RunResolution:
         return "SKIP" if self.already_completed else "PROCEED"
 
 
-def check_window_resolution(settings: Settings, business_date: date) -> RunResolution:
-    """Confirm the date is in the past and its ``run_key`` has not already completed."""
+def check_window_resolution(
+    settings: Settings,
+    business_date: date,
+    *,
+    time_zone: str | None = None,
+) -> RunResolution:
+    """Confirm the date is in the past and its ``run_key`` has not already completed.
+
+    ``time_zone`` is the zone the shop actually runs in — the one V4 reads from
+    ``business_settings``. It defaults to the configured zone so the check still works before V4
+    has run, but the caller should pass the resolved value: the shop's zone, not the config
+    default, decides what "today" is.
+    """
     run_key = build_run_key(settings.pipeline_name, business_date)
-    today = datetime.now(ZoneInfo(settings.run_timezone)).date()
+    zone = time_zone or settings.run_timezone
+    today = datetime.now(ZoneInfo(zone)).date()
 
     if business_date >= today:
         return RunResolution(
@@ -65,7 +77,7 @@ def check_window_resolution(settings: Settings, business_date: date) -> RunResol
                 severity="critical",
                 message=(
                     f"business_date {business_date.isoformat()} is not in the past "
-                    f"(today is {today.isoformat()} in {settings.run_timezone}); "
+                    f"(today is {today.isoformat()} in {zone}); "
                     "only a completed day can be extracted"
                 ),
                 error_code="RUN_DATE_INVALID",
