@@ -92,9 +92,11 @@ leaving the data available if the branch design firms up later.
 **Type: incremental, by business day.** Each run extracts one business day. The run never
 re-reads the whole history.
 
-**Tool:** a Python 3.12 script (`extract.py`) using **Psycopg 3** with a server-side cursor,
-scheduled and retried by **Prefect 3**. Python and Psycopg were chosen in Lab 1 and confirmed
-in Lab 2; nothing new is introduced here.
+**Tool:** the `psync_extract` Python package (Python 3.12 or newer — the development host runs
+3.13), using **Psycopg 3** with a server-side cursor and **Prefect 3** for orchestration and retries.
+Two entry points call the same code: `python -m psync_extract --date YYYY-MM-DD` for a single day,
+and the `extraction_flow` Prefect flow for a scheduled or repeatable run. Python and Psycopg were
+chosen in Lab 1 and confirmed in Lab 2; nothing new is introduced here.
 
 **Schedule:** every night at **01:00 Philippine time (Asia/Manila)**. The job can also be run
 by hand for a specific date when a re-run is needed. 01:00 was chosen because the shop is
@@ -168,7 +170,7 @@ it does not import PRINTSYNC code.
 
 | Boundary | PRINTSYNC (the source) | The pipeline (ours) |
 | --- | --- | --- |
-| Codebase | Untouched. No files added or changed. | Separate repository: Python 3.12, Psycopg 3, Prefect 3 |
+| Codebase | Untouched. No files added or changed. | Separate repository: Python 3.12+, Psycopg 3, Prefect 3 |
 | Database | Read-only. No tables, columns, indexes, or triggers added. | Its own PostgreSQL database, `psync_analytics` |
 | Credentials | One read-only login, provisioned once as an access grant | Holds and manages its own connection settings |
 | Scheduling | None. PRINTSYNC does not start or know about the job. | Prefect 3 schedules and retries it |
@@ -432,17 +434,20 @@ Every staging table carries three control columns that the source does not have:
 | `business_date` | date | The business day the row was extracted for. |
 | `extracted_at` | timestamptz | When the row was written. |
 
-| Source table | Staging table | Grain | Key |
+| Source table | Staging table | Grain | Staging key |
 | --- | --- | --- | --- |
-| `sales_transactions` | `stg_sales_transactions` | One row per sale | `id` |
-| `sales_transaction_items` | `stg_sales_transaction_items` | One row per sale line | `id` |
-| `payments` | `stg_payments` | One row per payment | `id` |
-| `orders` | `stg_orders` | One row per order | `id` |
-| `inventory_items` | `stg_inventory_items` | One row per product (snapshot) | `id` |
-| `business_settings` | `stg_business_settings` | One row per branch | `id` |
-| `branches` | `stg_branches` | One row per branch | `id` |
+| `sales_transactions` | `stg_sales_transactions` | One row per sale | `source_id` |
+| `sales_transaction_items` | `stg_sales_transaction_items` | One row per sale line | `source_id` |
+| `payments` | `stg_payments` | One row per payment | `source_id` |
+| `orders` | `stg_orders` | One row per order | `source_id` |
+| `inventory_items` | `stg_inventory_items` | One row per product (snapshot) | `source_id` |
+| `business_settings` | `stg_business_settings` | One row per branch | `source_id` |
+| `branches` | `stg_branches` | One row per branch | `source_id` |
 
-Constraints enforced on write: `run_id` not null; `business_date` not null; `id` not null and
+`source_id` holds the source table's `id` after the rename in Section 6.2, and is unique within a
+run rather than across runs — the same sale appears once per run that re-reads it.
+
+Constraints enforced on write: `run_id` not null; `business_date` not null; `source_id` not null and
 unique within a run; money columns `numeric(14,2)`; timestamp columns `timestamptz`.
 
 ### 6.2 Naming convention
@@ -495,6 +500,7 @@ no output needs.
 | `orders.customer_id` | `customer_id` | uuid | uuid | Pass-through |
 | `orders.created_at` | `created_at` | timestamptz | timestamptz | Pass-through |
 | `orders.updated_at` | `updated_at` | timestamptz | timestamptz | Pass-through |
+| `orders.branch_id` | `branch_id` | uuid | uuid | Pass-through |
 | `inventory_items.id` | `source_id` | uuid | uuid | Rename |
 | `inventory_items.sku` | `sku` | text | text | Pass-through |
 | `inventory_items.name` | `name` | text | text | Pass-through |
@@ -504,7 +510,10 @@ no output needs.
 | `inventory_items.stock` | `stock` | integer | integer | Pass-through |
 | `inventory_items.reorder_level` | `reorder_level` | integer | integer | Pass-through |
 | `inventory_items.uom` | `uom` | text | text | Pass-through |
+| `inventory_items.updated_at` | `updated_at` | timestamptz | timestamptz | Pass-through |
+| `inventory_items.branch_id` | `branch_id` | uuid | uuid | Pass-through |
 | `business_settings.id` | `source_id` | integer | integer | Rename |
+| `business_settings.branch_id` | `branch_id` | uuid | uuid | Pass-through |
 | `business_settings.vat_rate` | `vat_rate` | numeric | numeric(14,2) | Type mapping |
 | `business_settings.currency_symbol` | `currency_symbol` | text | text | Pass-through |
 | `business_settings.time_zone` | `time_zone` | text | text | Pass-through |
@@ -703,6 +712,7 @@ Every problem below is specific to this source system, not a generic list.
 | 1.0 | 5 October 2026 | Initial extraction specification. |
 | 1.1 | 14 October 2026 | Corrected the index name in Section 1.2 (`sales_transaction_items_transaction_idx`, after the duplicate index was dropped on 21 September 2026); stated the `pipeline_runs` grain in Section 4 (one row per source table per run, plus one run-level summary row); stated that the closed-day flag in Section 3 is an operator-supplied run parameter. Extraction scope, tables, columns, validation criteria and acceptance rules are unchanged. |
 | 1.2 | 25 October 2026 | Removed the unspecified Parquet archive from Section 5 and stated that operational detail is deleted at 90 days rather than archived; added a note to Section 7.1 that `RETRY` is reported by the pipeline and performed by the orchestration layer. Both changes make the document describe what was built. Extraction scope, tables, columns, validation criteria and acceptance rules are unchanged. |
+| 1.3 | 25 October 2026 | Corrected three inconsistencies found while checking the document against its own contract. Section 1.3 named a script `extract.py`, which does not exist — the pipeline is the `psync_extract` package, run as `python -m psync_extract --date YYYY-MM-DD` or through the `extraction_flow` Prefect flow — and the stated Python version is now "3.12 or newer", since the development host runs 3.13. Section 6.1 called the staging key `id` when Section 6.2 renames it to `source_id`. Section 6.3 was missing four mappings (`orders.branch_id`, `inventory_items.updated_at`, `inventory_items.branch_id`, `business_settings.branch_id`) and now covers all 51 columns. No change to scope, tables, columns, checks or acceptance rules. |
 
 ---
 
