@@ -64,11 +64,19 @@ def build_log(
 
 
 def write_log(directory: Path | str, payload: Mapping[str, Any]) -> Path:
-    """Write ``<run_key>.json`` atomically and return its path."""
+    """Write one file per **run**, atomically, and return its path.
+
+    Named for the ``run_key`` *and* the run's id: the key identifies the business day, but a day can
+    legitimately be run more than once (a retry, or a repeat that is skipped). Keying the filename
+    on the key alone meant the second run's log replaced the first — losing the evidence of the
+    extraction that actually happened.
+    """
     directory = Path(directory)
     directory.mkdir(parents=True, exist_ok=True)
 
-    target = directory / f"{_safe_filename(str(payload['run_key']))}.json"
+    stem = _safe_filename(str(payload["run_key"]))
+    run_id = str(payload["run_id"])[:8]
+    target = directory / f"{stem}_{run_id}.json"
     temporary = target.with_suffix(".json.tmp")
     temporary.write_text(
         json.dumps(payload, indent=2, default=str) + "\n", encoding="utf-8"
