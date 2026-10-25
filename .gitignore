@@ -35,3 +35,7 @@ Thumbs.db
 
 # Local assistant workspace notes (kept on disk, not part of the deliverable)
 .workbuddy-ai/
+
+# Pipeline output (doc section 9: logs and handover live on the host)
+pipeline/logs/
+pipeline/handover/
