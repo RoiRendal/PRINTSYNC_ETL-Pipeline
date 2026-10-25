@@ -14,6 +14,7 @@ from psync_extract.validation.v4 import (
     ShopSettings,
     check_shop_settings,
 )
+from psync_extract.validation.v7 import check_row_parity
 
 __all__ = [
     "CheckResult",
@@ -22,6 +23,7 @@ __all__ = [
     "Severity",
     "ShopSettings",
     "Status",
+    "check_row_parity",
     "check_schema_drift",
     "check_shop_settings",
     "check_source_connection",

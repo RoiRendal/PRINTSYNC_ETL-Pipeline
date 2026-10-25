@@ -56,6 +56,21 @@ def staging_table_for(source_table: str) -> str:
         raise StagingError(f"no staging table is mapped to {source_table!r}") from None
 
 
+def reset_run(conn: psycopg.Connection, run_id: str) -> int:
+    """Delete every staging row belonging to a run, and return how many were removed.
+
+    Called before writing, so a re-run replaces its own rows instead of colliding with them: the
+    primary key is ``(run_id, source_id)``, and a second attempt at the same run would otherwise
+    fail on the first duplicate. Scoped to one ``run_id``, so other runs are untouched.
+    """
+    deleted = 0
+    with conn.cursor() as cursor:
+        for staging in STAGING_TABLES.values():
+            cursor.execute(f"delete from public.{staging} where run_id = %s", (run_id,))
+            deleted += cursor.rowcount
+    return deleted
+
+
 def staging_columns(source_columns: Sequence[str]) -> tuple[str, ...]:
     """``id`` becomes ``source_id``; every other name is unchanged (doc section 6.2)."""
     return tuple("source_id" if column == "id" else column for column in source_columns)
