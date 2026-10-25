@@ -1,0 +1,33 @@
+# Local development database for the pipeline.
+#
+# The pipeline writes only here. It never writes to PRINTSYNC (specification section 1.6).
+# Team decision, 14 October 2026: development and verification use a local Docker PostgreSQL.
+#
+#   docker compose up -d       start
+#   docker compose down        stop, keep the data
+#   docker compose down -v     stop and delete the data
+#
+# The credentials below are local development defaults. Put them in PSYNC_TARGET_DSN:
+#   postgresql://psync_pipeline:psync_pipeline_dev@localhost:5432/psync_analytics
+# Override the password with POSTGRES_PASSWORD if you prefer a different one.
+
+services:
+  psync_analytics:
+    image: postgres:16
+    container_name: psync_analytics
+    environment:
+      POSTGRES_DB: psync_analytics
+      POSTGRES_USER: psync_pipeline
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-psync_pipeline_dev}
+    ports:
+      - "5432:5432"
+    volumes:
+      - psync_analytics_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U psync_pipeline -d psync_analytics"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  psync_analytics_data:
