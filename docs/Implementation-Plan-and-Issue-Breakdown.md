@@ -345,10 +345,11 @@ once created.
   - [ ] A second run of the same `run_key` returns SKIPPED and exits 0.
   - [ ] One connection and server-side cursors throughout (L8).
   - [ ] An end-to-end run against the development database produces a complete `pipeline_runs` lifecycle.
-- *Note on scheduling:* the 01:00 schedule is a deployment concern, not code. **Prefect 3.8.8 cannot
-  run a flow on the development host** — the client posts to `/api/flows/` and receives 404, with both
-  the ephemeral server and a dedicated one that answers `/api/health` with 200. The CLI entry point is
-  what is demonstrated; the flow needs no change once that install is fixed.
+- *Note on scheduling:* the 01:00 schedule is a deployment concern, not code. The flow runs in
+  Prefect's ephemeral mode with **no server at all** — verified 25 October 2026:
+  `psync_nightly_analytics:2026-10-17: APPROVED`, 16 rows, flow run `Completed`. If the host sets
+  `HTTP_PROXY`, add `127.0.0.1,localhost` to `NO_PROXY`; otherwise httpx sends Prefect's own API
+  calls through the proxy and they come back 404.
 - *Doc refs:* §1.3, §7.1, P6, L8, L10.
 
 **E-28 · Implement handover finalization and run summary emission**
@@ -431,10 +432,11 @@ cannot be attributed to a sale; runs V1–V8; decides APPROVED / APPROVED WITH W
 RETRY / SKIPPED / MANUAL REVIEW; records the run in `pipeline_runs`; writes its JSON log; hands over a
 manifest; and prunes operational detail at 90 days while keeping the audit row for 24 months.
 
-**Known limitation.** Prefect 3.8.8 cannot run a flow on the development host — the client posts to
-`/api/flows/` and receives 404, with both the ephemeral server and a dedicated one that answers
-`/api/health` with 200. The flow is written and imports correctly; the CLI entry point is what is
-demonstrated. Fixing that install is a deployment task, not an extraction one.
+**Prefect.** The flow runs in ephemeral mode with no server: `extraction_flow(business_date=...)`
+produced **APPROVED** with 16 rows on 25 October 2026, and the flow run finished `Completed`.
+Scheduling it at 01:00 is a deployment step (`flow.serve()` or a Prefect server), not a code change.
+On a host that sets `HTTP_PROXY`, add `127.0.0.1,localhost` to `NO_PROXY` — otherwise httpx sends
+Prefect's own API calls to the proxy and they return 404.
 
 **On numbering:** issues and pull requests share one number sequence on GitHub. PR #2 consumed
 number 2, which is why the issues list appears to skip it. Nothing is missing.
