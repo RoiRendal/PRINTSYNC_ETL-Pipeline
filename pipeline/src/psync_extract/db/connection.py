@@ -25,7 +25,32 @@ __all__ = ["SourceConnectionError", "connect_source", "server_side_cursor"]
 
 
 class SourceConnectionError(RuntimeError):
-    """PRINTSYNC could not be reached, or the session could not be made read-only."""
+    """PRINTSYNC could not be reached, or the session could not be made read-only.
+
+    ``error_code`` is the short value a run records for the failure (doc section 4), so the
+    classification happens once, where the failure does.
+    """
+
+    def __init__(self, message: str, error_code: str = "SRC_CONN_FAILED") -> None:
+        super().__init__(message)
+        self.error_code = error_code
+
+
+def _error_code(exc: BaseException) -> str:
+    """Classify a connection failure into the short code recorded on the run."""
+    text = str(exc).lower()
+    if "timeout" in text:
+        return "SRC_CONN_TIMEOUT"
+    if (
+        "refused" in text
+        or "could not connect" in text
+        or "failed to resolve" in text
+        or "could not translate host" in text
+        or "getaddrinfo" in text
+        or "name or service not known" in text
+    ):
+        return "SRC_CONN_REFUSED"
+    return "SRC_CONN_FAILED"
 
 
 @contextmanager
@@ -45,7 +70,8 @@ def connect_source(settings: Settings) -> Iterator[psycopg.Connection]:
     except psycopg.OperationalError as exc:
         raise SourceConnectionError(
             "could not connect to the PRINTSYNC source within "
-            f"{settings.connect_timeout_seconds}s: {exc}"
+            f"{settings.connect_timeout_seconds}s: {exc}",
+            _error_code(exc),
         ) from exc
 
     try:
@@ -57,7 +83,8 @@ def connect_source(settings: Settings) -> Iterator[psycopg.Connection]:
             conn.commit()
         except psycopg.Error as exc:
             raise SourceConnectionError(
-                f"connected to PRINTSYNC but could not make the session read-only: {exc}"
+                f"connected to PRINTSYNC but could not make the session read-only: {exc}",
+                "SRC_READONLY_FAILED",
             ) from exc
 
         yield conn
