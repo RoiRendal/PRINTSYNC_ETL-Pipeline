@@ -61,6 +61,12 @@ class Settings(BaseSettings):
         description="The Balayan branch's code or UUID; supplies time_zone, vat_rate and "
         "currency_symbol through its business_settings row."
     )
+    closed_day: date | None = None
+    """Operator-supplied closed-day flag (doc section 3).
+
+    Only V8 uses it, and only to tolerate a zero-row day. It is never inferred from the data:
+    a quiet night and a broken window look identical, so the operator has to say which it was.
+    """
 
     # --- Connection behaviour (doc sections 1.5 L8, 7.1) --------------------------------
     connect_timeout_seconds: int = DEFAULT_CONNECT_TIMEOUT_SECONDS

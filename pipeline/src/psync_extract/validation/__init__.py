@@ -15,7 +15,9 @@ from psync_extract.validation.v4 import (
     check_shop_settings,
 )
 from psync_extract.validation.v5 import check_identifiers
+from psync_extract.validation.v6 import check_primary_key_uniqueness
 from psync_extract.validation.v7 import check_row_parity
+from psync_extract.validation.v8 import check_non_empty
 
 __all__ = [
     "CheckResult",
@@ -25,6 +27,8 @@ __all__ = [
     "ShopSettings",
     "Status",
     "check_identifiers",
+    "check_non_empty",
+    "check_primary_key_uniqueness",
     "check_row_parity",
     "check_schema_drift",
     "check_shop_settings",
