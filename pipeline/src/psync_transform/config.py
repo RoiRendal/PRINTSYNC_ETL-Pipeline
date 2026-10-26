@@ -85,6 +85,14 @@ class Settings(BaseSettings):
         "over for this business date'.",
     )
 
+    # --- Where the handover lives (doc section 1.1) ---------------------------------------
+    handover_directory: Path = Field(
+        default=Path("handover"),
+        description="The directory holding the extraction handover manifests. A relative path is "
+        "resolved against the pipeline directory, so the batch finds them whatever the working "
+        "directory happens to be when a scheduler starts it.",
+    )
+
     # --- Behaviour (doc sections 5.6, 10.1) -----------------------------------------------
     run_timezone: str = DEFAULT_RUN_TIMEZONE
     demand_window_days: int = DEFAULT_DEMAND_WINDOW_DAYS
@@ -108,6 +116,17 @@ class Settings(BaseSettings):
                 f"RUN_TIMEZONE is not a known IANA time zone: {value!r}"
             ) from exc
         return value
+
+    @field_validator("handover_directory")
+    @classmethod
+    def _resolve_handover_directory(cls, value: Path) -> Path:
+        """Anchor a relative path to the pipeline directory, never to the working directory.
+
+        Stage 1's CLI defaults its handover directory to ``handover`` relative to wherever it was
+        started. Reading it the same way here would make the batch's input depend on the caller's
+        current directory, which is not a property of the batch.
+        """
+        return value if value.is_absolute() else (_PROJECT_ROOT / value)
 
     @field_validator("connect_timeout_seconds")
     @classmethod
