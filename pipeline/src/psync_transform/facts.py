@@ -35,8 +35,10 @@ __all__ = [
     "FactBuild",
     "FactError",
     "SourceCounts",
+    "build_fct_daily_order_status",
     "build_fct_daily_product_demand",
     "build_fct_daily_sales",
+    "build_fct_daily_stock_snapshot",
 ]
 
 
@@ -570,6 +572,255 @@ def build_fct_daily_product_demand(
 
     return FactBuild(
         table="fct_daily_product_demand",
+        business_dates=dates,
+        rows_written=written,
+        counts=counts,
+    )
+
+
+# =============================================================================================
+# fct_daily_stock_snapshot                                     (doc section 6.1, rules A-07, B-10…B-13)
+#
+# One row per business_date x branch x catalogue item, for the TARGET date only. The whole point of
+# separating it from demand is rule D10: demand is rebuilt for the whole look-back because voids
+# change it, but stock is a snapshot of the night the batch ran — rebuilding an old date's stock with
+# tonight's catalogue would destroy the record of what was on the shelf then.
+#
+# The catalogue drives the grain, not the sales: an item that did not move is the one most likely to
+# need a reorder decision, so it cannot be missing from the table.
+# =============================================================================================
+
+_DELETE_STOCK_SQL = (
+    "delete from public.fct_daily_stock_snapshot where business_date = %(target)s"
+)
+
+_INCOMING_STOCK_SQL = r"""
+create temp table incoming_stock on commit drop as
+select i.source_id,
+       i.stock,
+       i.reorder_level,
+       d.item_key,
+       b.branch_key
+from public.stg_inventory_items i
+join public.dim_item d
+  on d.item_ref = 'name:' || regexp_replace(btrim(lower(i.name)), '\s+', ' ', 'g')
+ and d.is_current
+left join public.dim_branch b
+       on b.branch_id = i.branch_id
+      and b.valid_from <= %(target)s
+      and (b.valid_to is null or %(target)s < b.valid_to)
+where i.run_id = %(run)s
+"""
+
+# `recommended_reorder` reads the 30-day projection from the demand fact — the most recent one this
+# batch produced. An item that never sold has none, so the forecast is 0 and the recommendation is
+# simply the shelf.
+_INSERT_STOCK_SQL = r"""
+insert into public.fct_daily_stock_snapshot (
+    business_date, branch_key, item_key, stock_on_hand, reorder_level,
+    stock_status, recommended_reorder
+)
+select %(target)s,
+       s.branch_key,
+       s.item_key,
+       s.stock,
+       s.reorder_level,
+       case when s.stock = 0 then 'critical'
+            when s.stock <= s.reorder_level then 'warning'
+            else 'healthy' end,
+       greatest(0, ceil(coalesce(d.forecast_demand_30d, 0) - s.stock))::integer
+from incoming_stock s
+left join (
+    select branch_key, item_key, max(forecast_demand_30d) as forecast_demand_30d
+    from public.fct_daily_product_demand
+    where business_date between %(start)s and %(end)s
+    group by 1, 2
+) d on d.branch_key = s.branch_key and d.item_key = s.item_key
+"""
+
+
+def build_fct_daily_stock_snapshot(
+    conn: psycopg.Connection, batch: Batch, time_zone: str
+) -> FactBuild:
+    """Write the stock snapshot for the batch's target business date."""
+    params = _stage(conn, batch, time_zone)
+    params["target"] = batch.window_end
+    params["start"] = batch.window_start
+    params["end"] = batch.window_end
+
+    conn.execute(_DELETE_STOCK_SQL, params)
+    conn.execute("drop table if exists incoming_stock")
+    conn.execute(_INCOMING_STOCK_SQL, params)
+
+    unresolved = conn.execute(
+        "select count(*) from incoming_stock where item_key is null or branch_key is null"
+    ).fetchone()[0]
+    if unresolved:
+        raise FactError(
+            f"{unresolved} catalogue item(s) resolved no product or branch version. The item and "
+            "branch dimensions are built from the same snapshot, so this means they were built "
+            "from different data — fix the order of the batch, not this statement."
+        )
+
+    conn.execute(_INSERT_STOCK_SQL, params)
+
+    written = conn.execute(
+        "select count(*) from public.fct_daily_stock_snapshot where business_date = %(target)s",
+        {"target": batch.window_end},
+    ).fetchone()[0]
+
+    counts = {
+        table: SourceCounts(
+            table=table,
+            read=_count(conn, table, batch.parent_run_id),
+            quarantined=quarantined(conn, batch, table),
+        )
+        for table in ("inventory_items",)
+    }
+
+    return FactBuild(
+        table="fct_daily_stock_snapshot",
+        business_dates=(batch.window_end,),
+        rows_written=written,
+        counts=counts,
+    )
+
+
+# =============================================================================================
+# fct_daily_order_status                                       (doc section 6.1, rules A-03, A-05)
+#
+# One row per business_date x branch x status, densified across all six statuses for any
+# (date, branch) that has at least one order: a funnel with a missing step reads as a broken funnel.
+# A branch with no orders at all gets no rows, so "no orders" is never confused with "no data".
+# =============================================================================================
+
+_UNKNOWN_ORDER_STATUS = """
+    s.status not in (select status_name from public.dim_order_status)
+"""
+
+# Rule X-04 / C-06: the cohort is orders *raised* on a day, not orders touched on a day. Stage 1
+# re-reads the whole orders table when `updated_at` moves (finding F-10 — all 23 orders in the
+# export share one timestamp), so the window without this filter would count February's orders as
+# today's demand.
+_ORDER_COHORT = """
+    (o.created_at at time zone %(tz)s)::date between %(start)s and %(end)s
+""".strip()
+
+_DELETE_ORDER_SQL = (
+    "delete from public.fct_daily_order_status where business_date between %(start)s and %(end)s"
+)
+
+_INCOMING_ORDER_SQL = r"""
+create temp table incoming_order on commit drop as
+select o.source_id,
+       (o.created_at at time zone %(tz)s)::date      as business_date,
+       o.branch_id,
+       b.branch_key,
+       st.status_key,
+       o.is_custom,
+       o.amount
+from public.stg_orders o
+join public.dim_order_status st
+  on st.status_name = o.status
+left join public.dim_branch b
+       on b.branch_id = o.branch_id
+      and b.valid_from <= (o.created_at at time zone %(tz)s)::date
+      and (b.valid_to is null or (o.created_at at time zone %(tz)s)::date < b.valid_to)
+where o.run_id = %(run)s
+  and (o.created_at at time zone %(tz)s)::date between %(start)s and %(end)s
+"""
+
+_ORDER_TOTALS_SQL = r"""
+create temp table order_totals on commit drop as
+select business_date,
+       branch_key,
+       status_key,
+       count(*)                              as order_count,
+       coalesce(sum(amount), 0)              as order_value,
+       coalesce(sum(case when is_custom then 1 else 0 end), 0) as custom_order_count
+from incoming_order
+group by 1, 2, 3
+"""
+
+_INSERT_ORDER_SQL = r"""
+insert into public.fct_daily_order_status (
+    business_date, branch_key, status_key, order_count, order_value,
+    custom_order_count, avg_order_value
+)
+select a.business_date,
+       a.branch_key,
+       st.status_key,
+       coalesce(o.order_count, 0),
+       coalesce(o.order_value, 0),
+       coalesce(o.custom_order_count, 0),
+       case when coalesce(o.order_count, 0) > 0
+            then round(o.order_value / o.order_count, 2) end
+from (select distinct business_date, branch_key from incoming_order) a
+cross join public.dim_order_status st
+left join order_totals o
+       on o.business_date = a.business_date
+      and o.branch_key = a.branch_key
+      and o.status_key = st.status_key
+"""
+
+
+def build_fct_daily_order_status(
+    conn: psycopg.Connection, batch: Batch, time_zone: str
+) -> FactBuild:
+    """Rebuild the order-status fact for every business date this batch covers."""
+    params = _stage(conn, batch, time_zone)
+    params["start"] = batch.window_start
+    params["end"] = batch.window_end
+
+    quarantine(
+        conn, batch,
+        source_table="orders",
+        rule_id="C-16", reason="unknown_order_status",
+        detail="the order status is not one the status dimension knows",
+        condition=_UNKNOWN_ORDER_STATUS,
+    )
+
+    conn.execute("drop table if exists incoming_order")
+    conn.execute(_INCOMING_ORDER_SQL, params)
+
+    unresolved = conn.execute(
+        "select count(*) from incoming_order where branch_key is null"
+    ).fetchone()[0]
+    if unresolved:
+        raise FactError(
+            f"{unresolved} order(s) resolved no branch version, which means the branch dimension "
+            "changed between the check and the join."
+        )
+
+    conn.execute(_DELETE_ORDER_SQL, params)
+    conn.execute(_ORDER_TOTALS_SQL)
+    conn.execute(_INSERT_ORDER_SQL)
+
+    dates = tuple(
+        row[0]
+        for row in conn.execute(
+            "select distinct business_date from public.fct_daily_order_status "
+            "where business_date between %(start)s and %(end)s order by 1",
+            {"start": batch.window_start, "end": batch.window_end},
+        ).fetchall()
+    )
+    written = conn.execute(
+        "select count(*) from public.fct_daily_order_status "
+        "where business_date between %(start)s and %(end)s",
+        {"start": batch.window_start, "end": batch.window_end},
+    ).fetchone()[0]
+
+    counts = {
+        table: SourceCounts(
+            table=table,
+            read=_count(conn, table, batch.parent_run_id),
+            quarantined=quarantined(conn, batch, table),
+        )
+        for table in ("orders",)
+    }
+
+    return FactBuild(
+        table="fct_daily_order_status",
         business_dates=dates,
         rows_written=written,
         counts=counts,
