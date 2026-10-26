@@ -344,6 +344,14 @@ def _stage(conn: psycopg.Connection, batch: Batch, time_zone: str) -> dict[str, 
         "tz": time_zone,
     }
 
+    # The quarantine is a **recomputation**, like the facts: the batch's rows are cleared and
+    # re-derived from the current staging data. Without this, a batch that was re-run after a fix
+    # would still carry the quarantine of the run before it, and the reject rate — which decides
+    # between APPROVED and MANUAL REVIEW — would be computed from stale rejections.
+    conn.execute(
+        "delete from public.quarantine_rows where batch_id = %(batch)s", params
+    )
+
     # --- cleaning: quarantine first, then use whatever is left --------------------------------
     quarantine(
         conn, batch,
