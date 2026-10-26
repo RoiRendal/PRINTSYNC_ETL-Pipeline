@@ -202,6 +202,7 @@ placeholder.
 | D8 | Late-arriving data is handled by the look-back, not here. | A sale corrected more than three days after its day will not be re-read, so its fact row stays wrong. That is a Stage 1 limitation (P2 there), inherited, and it is why a manual re-run for an old date is supported. |
 | D9 | Lookup tables (dimensions) are always available to the facts, because they are built in the same transaction. | There is no "dimension missing" state to handle; a fact row that cannot resolve a dimension key is quarantined, not written with a null key. |
 | D10 | The stock snapshot describes the night the batch ran, not a reconstruction of that day's shelf. | A manual re-run of an old date refreshes its stock figures with today's catalogue. That is what a snapshot means, and it is why the stock fact is separate from demand (§5.6). |
+| D11 | **`orders.is_custom` is present in staging.** Revision 1.3 of Stage 1 did not extract it; revision 1.5 does, through migration `004_stg_order_custom.sql` (finding F-02's pattern, second occurrence). | The order fact cannot count custom orders. T1 fails the batch, exactly as it does for the missing product name. |
 
 ---
 
