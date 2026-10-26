@@ -2,6 +2,10 @@
 
 The line-level detail behind each sale: what was sold, how many, at what price.
 
+``name`` is carried because it is the only product identifier most lines have: the catalogue link
+is null on 93.4% of them (doc section 2.2, revision 1.4). Transformation builds the product
+dimension from it, so dropping it here would leave 93% of revenue unattributed.
+
 This table has **no timestamp of its own**, which decides the whole query. The only way in is
 through the parent sale: join to ``sales_transactions`` and re-apply the same
 ``created_at OR voided_at`` predicate the sales extractor uses (P3). A date filter on the item table
@@ -27,6 +31,7 @@ COLUMNS: tuple[str, ...] = (
     "id",
     "transaction_id",
     "inventory_item_id",
+    "name",
     "quantity",
     "unit_price",
     "line_discount",

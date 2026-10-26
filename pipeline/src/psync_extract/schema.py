@@ -56,13 +56,15 @@ SOURCE_SCHEMA: tuple[TableSpec, ...] = (
             Column("branch_id", "uuid"),
         ),
     ),
-    # 2.2 - the items on each sale. No timestamp of its own (P3).
+    # 2.2 - the items on each sale. No timestamp of its own (P3). `name` is the product identity
+    # Transformation uses: the catalogue link is null on 93.4% of lines (doc section 2.2, rev. 1.4).
     TableSpec(
         "sales_transaction_items",
         (
             Column("id", "uuid"),
             Column("transaction_id", "uuid"),
             Column("inventory_item_id", "uuid"),
+            Column("name", "text"),
             Column("quantity", "integer"),
             Column("unit_price", "numeric"),
             Column("line_discount", "numeric"),
