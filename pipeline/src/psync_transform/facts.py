@@ -548,7 +548,7 @@ def build_fct_daily_product_demand(
     dates = tuple(
         row[0]
         for row in conn.execute(
-            "select business_date from public.fct_daily_product_demand "
+            "select distinct business_date from public.fct_daily_product_demand "
             "where business_date between %(start)s and %(end)s order by 1",
             {"start": batch.window_start, "end": batch.window_end},
         ).fetchall()
