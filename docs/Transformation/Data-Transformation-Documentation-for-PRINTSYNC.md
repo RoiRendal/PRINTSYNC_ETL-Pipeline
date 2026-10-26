@@ -237,7 +237,7 @@ relationships between tables actually reconcile.
 | F-03 | `sales_transactions.discount` | Header discount not itemised on any line | subtotal ₱1,000.00, discount ₱40.00, `Σ line_discount` ₱0.00 | **75 of 867 (8.6 %)**; 82 sales carry a discount at all | Keep the header discount as the day's figure and record the unallocated part (B-05, T4) |
 | F-04 | `sales_transactions.created_at` | Mixed business-day boundary — timestamps are UTC, the shop's day is `Asia/Manila` | `2026-10-01T16:30:00+00:00` is 2 October in Manila | **7 of 867 (0.8 %)** fall on a different Manila date | Derive `business_date` in `Asia/Manila` (S-01, T13) |
 | F-05 | `sales_transactions.status`, `payments.status` | Records that must not count as revenue, present in the batch by design | `status = 'voided'`, `voided_at` set | **16 sales (1.8 %)** and 16 payments; 12 of the 18 sales in the 2026-10-02 batch | Exclude from revenue, count them (X-01, X-02) |
-| F-06 | `sales_transactions.tax` | Value inconsistent with the configured VAT rate | net ₱3,240.00, tax ₱0.00, expected ₱388.80 | **5 of 867 (0.6 %)**: four ₱10.00 voided test sales and one completed ₱3,240.00 sale | Never recompute a recorded tax; warn (T5) |
+| F-06 | `sales_transactions.tax` | Value inconsistent with the configured VAT rate | net ₱3,240.00, tax ₱0.00, expected ₱388.80 | **5 of 867 (0.6 %)**: four ₱10.00 voided test sales and one completed ₱3,240.00 sale | Never recompute a recorded tax; warn (T6) |
 | F-07 | `inventory_items.sku` | Mixed case in a code column | `PCK-MAILER-10x13`, `SCR-FRAME-20x24` | 2 of 15 | Upper-case the code (S-11) |
 | F-08 | `inventory_items.uom` | A single value for every item while the names carry the real unit | `uom = 'pc'` for `"Tarpaulin Printing (per sq ft)"` and `"Business Cards (100 pcs)"` | 15 of 15 | Treat `uom` as a label, never as a conversion factor (S-18) |
 | F-09 | `inventory_items.cost_price` | Cost known for a small slice of revenue | 73 of 1,305 completed lines have a costed product | **₱79,145.00 of ₱1,140,000.00 itemised revenue (6.9 %)** | Publish costed profit plus its coverage; NULL the whole-day figure (B-09, T9) |
@@ -374,7 +374,7 @@ row is a recomputation, not a record to choose between.
 | S-17 | `orders.status` | `Pending`, `Designing`, `In Production`, `Ready for Pickup`, `Completed`, `Delivered` | The same six names, with `status_order` 1–6 and `is_backlog` / `is_terminal` flags | Quarantine (C-16) |
 | S-18 | `inventory_items.uom` | `pc` (15 of 15) | Lower-cased and trimmed, kept as a **label only** | Never used in arithmetic — F-08 shows it does not describe the real unit |
 | S-19 | Currency | `₱` on both settings rows | Carried on `dim_branch.currency_symbol`, not on any measure | — |
-| S-20 | VAT rate | `12` on both settings rows | `dim_branch.vat_rate = 12.00`, interpreted as **12 per cent**, not 0.12 | A rate of 0 or above 100 fails T5 rather than silently zeroing every tax figure |
+| S-20 | VAT rate | `12` on both settings rows | `dim_branch.vat_rate = 12.00`, interpreted as **12 per cent**, not 0.12 | A rate of 0 or above 100 fails T6 rather than silently zeroing every tax figure |
 
 ### 4.4 Handling of conversion failures
 
@@ -907,7 +907,7 @@ records_output (stock snapshot)              =  catalogue items in the branch sn
 | T3 | Record reconciliation | All seven source tables | Prove no record vanished during cleaning | `records_read = records_retained + records_quarantined` for every table | Critical |
 | T4 | Internal money arithmetic | `fct_daily_sales` | Prove the money columns describe the same day consistently | `net_revenue = line_revenue_total - line_discount_total - unallocated_discount`; `unallocated_discount = discount_total - line_discount_total >= 0`; `gross_revenue = net_revenue + tax_total` | Critical |
 | T5 | Line-to-header identity | Sales and lines | Prove the line-level rebuild is arithmetically the header | `Σ (quantity × unit_price)` over live lines equals `Σ subtotal` over live sales | Critical |
-| T6 | VAT conformance | `sales_transactions.tax` | Catch tax that does not match the configured rate | Per sale, `tax = round2(vat_rate/100 × (subtotal - discount))`. Every exception is counted; the check fails when exceptions exceed 1 % of live sales in the batch, or when the rate is outside 0–100 | Non-critical |
+| T6 | VAT conformance | `sales_transactions.tax` | Catch tax that does not match the configured rate | Per sale, `tax = round2(vat_rate/100 × (subtotal - discount))`. Every exception is counted; the check fails when exceptions exceed 1 % of live sales in the batch, or when the rate is zero or above 100 | Non-critical |
 | T7 | Key uniqueness | Every output table | Prevent duplicates | Zero duplicate primary keys; zero duplicate `(natural key, valid_from)` in `dim_branch` and `dim_item` | Critical |
 | T8 | Referential integrity | Every fact | Prevent orphans and row multiplication | 100 % of fact rows resolve their dimension key; fact row count does not exceed the input row count at the same grain; `branch_key`, `item_key`, `status_key` are the versions valid on the fact's `business_date` | Critical |
 | T9 | Required columns not null | Every `NOT NULL` column in §6.1 | Prove the contract's nullability is real, not aspirational | Zero nulls in every `NOT NULL` output column | Critical |
@@ -1249,6 +1249,7 @@ nothing; these are the failures this pipeline will actually have.
 | --- | --- | --- |
 | 1.0 | 26 October 2026 | Initial transformation specification. Profiling basis: the PRINTSYNC export of 2 October 2026. Records the input gap in the extraction contract (D1, P10) and the cost-coverage limit (B-10). |
 | 1.1 | 26 October 2026 | Closed the input gap by decision rather than by workaround. Stage 1 revision 1.4 adds `sales_transaction_items.name` (§2.2, §6.3), migration `002_stg_item_name.sql` adds the column to staging, and the schema registry and items extractor select it — 52 columns instead of 51. D1, F-02 and P10 now record the resolution and keep T1 as the guard for a staging table that predates the migration. This stage's own schema migration is renumbered to `003_transformation_schema.sql` to leave `002` to the extraction fix. No rule, check, grain or acceptance criterion changed. |
+| 1.2 | 26 October 2026 | Corrected three cross-references found while writing the schema migration. F-06 and S-20 pointed at check T5 when VAT conformance is T6, and T6's rate condition read "outside 0–100" while S-20 fails a rate of 0 — both now say **zero or above 100**, which is also what `dim_branch.vat_rate` enforces. No rule, threshold or acceptance criterion changed. |
 
 ---
 
