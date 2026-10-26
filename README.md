@@ -3,12 +3,12 @@
 Standalone ETL pipeline for the PRINTSYNC printing shop: the nightly analytics batch
 pipeline `psync_nightly_analytics` (Extract → Transform → Load).
 
-**Stage 1 (Extract) is complete. Stage 2 (Transform) is specified and awaiting implementation.**
-Each stage's specification is the contract its code implements — code follows the document, never
-the other way round:
+**Stages 1 (Extract) and 2 (Transform) are complete.** Stage 3 (Load) is out of scope for the
+current laboratory. Each stage's specification is the contract its code implements — code follows
+the document, never the other way round:
 
-- [Extraction specification](docs/Extraction/Data-Extraction-Documentation-for-PRINTSYNC.md) — Stage 1, implemented
-- [Transformation specification](docs/Transformation/Data-Transformation-Documentation-for-PRINTSYNC.md) — Stage 2, contract published
+- [Extraction specification](docs/Extraction/Data-Extraction-Documentation-for-PRINTSYNC.md) — Stage 1, implemented (rev 1.5)
+- [Transformation specification](docs/Transformation/Data-Transformation-Documentation-for-PRINTSYNC.md) — Stage 2, implemented (rev 1.3)
 
 ## Deployment boundary
 
@@ -17,36 +17,32 @@ database over a **read-only** connection and writes only to its own database,
 `psync_analytics`. No PRINTSYNC code is imported, and no PRINTSYNC file, table, column or
 trigger is created or changed. See §1.6 of the specification.
 
+## Running the stages
+
+All pipeline code lives in `pipeline/`, so work from there. Each stage is one command:
+
+```bash
+python -m psync_extract   --date 2026-10-17   # Stage 1: extract one business day
+python -m psync_transform --date 2026-10-17   # Stage 2: transform that day's handover
+```
+
+Both exit 0 when the run may be handed over and 1 when it may not, so a scheduler notices.
+Stage 2 reads nothing from PRINTSYNC — its input is Stage 1's handover (the staged rows selected
+by `run_id`, plus the manifest Stage 1 writes on approval).
+
 ## Repository layout
 
 ```
 docs/Extraction/        the extraction specification - the contract Stage 1 implements
-docs/Transformation/    the transformation specification - the contract Stage 2 implements
-pipeline/               the entire ETL pipeline: package and project configuration
-```
-
-## Getting started
-
-All pipeline code lives in `pipeline/`, so work from there:
-
-```bash
-cd pipeline
-python -m venv .venv
-.venv/Scripts/activate          # Windows
-# source .venv/bin/activate     # Linux / macOS
-
-pip install -e .
-cp .env.example .env            # then fill in real values; never commit .env
-```
-
-Check that the package imports:
-
-```bash
-python -c "import psync_extract; print(psync_extract.__version__)"
+docs/Extraction/issues/ the Stage 1 issue texts (local working set)
+docs/Transformation/    the transformation specification, its implementation plan and issue texts
+pipeline/               the entire ETL pipeline: two packages, psync_extract and psync_transform
 ```
 
 ## How work is tracked
 
 Every change addresses exactly one GitHub issue; every issue cites the document section it
 implements. Branches are named `issue-<N>-<short-slug>` and pull requests close their issue
-with `Closes #N`.
+with `Closes #N`. Stage 2's implementation plan records how the work was batched and evidenced:
+
+- [Transformation implementation plan](docs/Transformation/Implementation-Plan-and-Issue-Breakdown.md)
