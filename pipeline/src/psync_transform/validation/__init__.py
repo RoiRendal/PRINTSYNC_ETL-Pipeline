@@ -4,7 +4,7 @@ Each check answers a question about the transformed output and returns a
 :class:`~psync_transform.validation.result.CheckResult`. Whether a failed check stops the batch is
 decided by its severity and the rules in section 10.1, not here.
 
-T1, T2, T3, T5, T12, T15 and T17 are implemented; the rest arrive with the rules they verify.
+T1, T2, T3, T5, T12, T15, T16 and T17 are implemented; the rest arrive with the rules they verify.
 """
 
 from psync_transform.validation.result import CheckResult, Severity, Status
@@ -14,6 +14,7 @@ from psync_transform.validation.t3 import check_record_reconciliation
 from psync_transform.validation.t5 import check_line_to_header_identity
 from psync_transform.validation.t12 import check_fact_reconciliation
 from psync_transform.validation.t15 import check_version_continuity
+from psync_transform.validation.t16 import check_status_domain
 from psync_transform.validation.t17 import check_item_identity
 
 __all__ = [
@@ -26,5 +27,6 @@ __all__ = [
     "check_item_identity",
     "check_line_to_header_identity",
     "check_record_reconciliation",
+    "check_status_domain",
     "check_version_continuity",
 ]
