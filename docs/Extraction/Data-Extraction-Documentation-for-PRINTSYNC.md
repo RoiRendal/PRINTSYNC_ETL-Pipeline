@@ -228,9 +228,18 @@ Seven tables. For each: why it is in scope, and the columns we actually take.
 | `id` | uuid | Primary key. |
 | `transaction_id` | uuid | Links the item to its sale. Required for windowing. |
 | `inventory_item_id` | uuid | Links to the catalogue. Nullable if the item was deleted from inventory. |
+| `name` | text | The product name as it was sold. Added in revision 1.4 — see below. |
 | `quantity` | integer | Units sold. Constrained at source to be greater than zero. |
 | `unit_price` | numeric | Price per unit at the time of sale. |
 | `line_discount` | numeric | Discount on this line. Added 30 September 2026 (see L4). |
+
+**Why `name` is extracted (revision 1.4).** Stage 2 identifies a product by the name printed on
+the sale line, because `inventory_item_id` is null on **93.4 % of sale lines** (1,241 of 1,329 in
+the 2 October 2026 export). The shop sells print services — tarpaulin, lamination, business cards —
+that were never added to the 15-row inventory catalogue, so the catalogue link cannot be the
+product's identity. Without this column, 93 % of the shop's revenue has no product attached to it
+and `fct_daily_product_demand` cannot be built. The column is copied unchanged, like every other
+column: no cleaning happens in this stage (see §7.3).
 
 ### 2.3 `payments`
 
@@ -484,6 +493,7 @@ no output needs.
 | `sales_transaction_items.id` | `source_id` | uuid | uuid | Rename |
 | `sales_transaction_items.transaction_id` | `transaction_id` | uuid | uuid | Pass-through |
 | `sales_transaction_items.inventory_item_id` | `inventory_item_id` | uuid | uuid | Pass-through |
+| `sales_transaction_items.name` | `name` | text | text | Pass-through (rev. 1.4) |
 | `sales_transaction_items.quantity` | `quantity` | integer | integer | Pass-through |
 | `sales_transaction_items.unit_price` | `unit_price` | numeric | numeric(14,2) | Type mapping |
 | `sales_transaction_items.line_discount` | `line_discount` | numeric | numeric(14,2) | Type mapping |
@@ -713,6 +723,7 @@ Every problem below is specific to this source system, not a generic list.
 | 1.1 | 14 October 2026 | Corrected the index name in Section 1.2 (`sales_transaction_items_transaction_idx`, after the duplicate index was dropped on 21 September 2026); stated the `pipeline_runs` grain in Section 4 (one row per source table per run, plus one run-level summary row); stated that the closed-day flag in Section 3 is an operator-supplied run parameter. Extraction scope, tables, columns, validation criteria and acceptance rules are unchanged. |
 | 1.2 | 25 October 2026 | Removed the unspecified Parquet archive from Section 5 and stated that operational detail is deleted at 90 days rather than archived; added a note to Section 7.1 that `RETRY` is reported by the pipeline and performed by the orchestration layer. Both changes make the document describe what was built. Extraction scope, tables, columns, validation criteria and acceptance rules are unchanged. |
 | 1.3 | 25 October 2026 | Corrected three inconsistencies found while checking the document against its own contract. Section 1.3 named a script `extract.py`, which does not exist — the pipeline is the `psync_extract` package, run as `python -m psync_extract --date YYYY-MM-DD` or through the `extraction_flow` Prefect flow — and the stated Python version is now "3.12 or newer", since the development host runs 3.13. Section 6.1 called the staging key `id` when Section 6.2 renames it to `source_id`. Section 6.3 was missing four mappings (`orders.branch_id`, `inventory_items.updated_at`, `inventory_items.branch_id`, `business_settings.branch_id`) and now covers all 51 columns. No change to scope, tables, columns, checks or acceptance rules. |
+| 1.4 | 26 October 2026 | **Added `sales_transaction_items.name` to the extraction scope** (§2.2 and §6.3), at the request of the Transformation stage. Stage 2 identifies a product by the name printed on the sale line because `inventory_item_id` is null on 93.4 % of lines — the shop sells print services that were never catalogued — so without this column 93 % of revenue cannot be attributed to a product. The column is a pass-through, extracted unchanged; staging gained it through a new migration (`002_stg_item_name.sql`) rather than by editing the applied `001`. One column added, no column removed, no check or acceptance rule changed; the registry in `psync_extract.schema` and the items extractor now cover 52 columns instead of 51. |
 
 ---
 
