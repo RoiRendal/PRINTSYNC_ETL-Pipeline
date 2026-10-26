@@ -1,4 +1,7 @@
-issues/
+# A scratch issues folder at the repository root only. The rule used to be a bare `issues/`,
+# which matched at any depth and silently ignored the tracked documentation in docs/issues/ as
+# well as any new docs/<stage>/issues/ folder.
+/issues/
 
 # Virtual environments
 .venv/
