@@ -3,10 +3,12 @@
 Standalone ETL pipeline for the PRINTSYNC printing shop: the nightly analytics batch
 pipeline `psync_nightly_analytics` (Extract → Transform → Load).
 
-**Stage 1 (Extract) is under construction.** Its specification is the contract this code
-implements — code follows the document, never the other way round:
+**Stage 1 (Extract) is complete. Stage 2 (Transform) is specified and awaiting implementation.**
+Each stage's specification is the contract its code implements — code follows the document, never
+the other way round:
 
-- [Extraction specification](docs/Extraction/Data-Extraction-Documentation-for-PRINTSYNC.md)
+- [Extraction specification](docs/Extraction/Data-Extraction-Documentation-for-PRINTSYNC.md) — Stage 1, implemented
+- [Transformation specification](docs/Transformation/Data-Transformation-Documentation-for-PRINTSYNC.md) — Stage 2, contract published
 
 ## Deployment boundary
 
@@ -18,8 +20,9 @@ trigger is created or changed. See §1.6 of the specification.
 ## Repository layout
 
 ```
-docs/Extraction/    the extraction specification - the contract this code implements
-pipeline/           the entire ETL pipeline: package and project configuration
+docs/Extraction/        the extraction specification - the contract Stage 1 implements
+docs/Transformation/    the transformation specification - the contract Stage 2 implements
+pipeline/               the entire ETL pipeline: package and project configuration
 ```
 
 ## Getting started
