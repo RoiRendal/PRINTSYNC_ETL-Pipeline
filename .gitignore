@@ -3,6 +3,12 @@
 # well as any new docs/<stage>/issues/ folder.
 /issues/
 
+# The Stage 1 issue texts are a local working set and are deliberately not published: the issues
+# themselves live on GitHub, and their descriptions are the record. This rule names the path
+# exactly, so docs/Transformation/issues/ stays tracked — a folder name is not a publishing
+# decision, and ignoring one by name is how the Stage 1 files went missing in the first place.
+docs/issues/
+
 # Virtual environments
 .venv/
 venv/
