@@ -83,13 +83,15 @@ SOURCE_SCHEMA: tuple[TableSpec, ...] = (
             Column("voided_at", "timestamptz"),
         ),
     ),
-    # 2.4 - custom and production jobs. Windowed on updated_at.
+    # 2.4 - custom and production jobs. Windowed on updated_at. `is_custom` distinguishes the
+    # custom jobs from the shelf (doc section 2.4, revision 1.5).
     TableSpec(
         "orders",
         (
             Column("id", "uuid"),
             Column("status", "text"),
             Column("amount", "numeric"),
+            Column("is_custom", "boolean"),
             Column("customer_id", "uuid"),
             Column("created_at", "timestamptz"),
             Column("updated_at", "timestamptz"),
