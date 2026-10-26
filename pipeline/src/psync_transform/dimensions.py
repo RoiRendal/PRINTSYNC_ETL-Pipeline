@@ -1,9 +1,9 @@
 """Building the dimensions (doc section 5.5).
 
-Two dimensions live here. ``dim_date`` is generated — a calendar is arithmetic, not data.
-``dim_branch`` is the first real SCD Type 2 build in the pipeline: a branch attribute that changes
-closes the current version and opens a new one, so a fact row from last week still points at the
-settings that were true last week.
+Three dimensions live here. ``dim_date`` is generated — a calendar is arithmetic, not data.
+``dim_branch`` and ``dim_item`` are SCD Type 2: an attribute that changes closes the current version
+and opens a new one, so a fact row from last week still points at the settings that were true last
+week.
 
 The version mechanics are worth stating once, because getting them wrong is silent:
 
@@ -33,6 +33,7 @@ __all__ = [
     "DimensionError",
     "build_dim_branch",
     "build_dim_date",
+    "build_dim_item",
 ]
 
 
@@ -228,6 +229,163 @@ def build_dim_branch(conn: psycopg.Connection, batch: Batch) -> DimensionBuild:
 
     return DimensionBuild(
         table="dim_branch",
+        rows_written=written,
+        rows_closed=closed,
+        rows_unchanged=unchanged,
+    )
+
+
+# =============================================================================================
+# dim_item                                                                  (rules M-03, C-02…C-05)
+#
+# The one dimension that exists because the data is what it is. `inventory_item_id` is null on
+# 93.4% of sale lines (finding F-01), so a product's identity is the name printed on the line, and
+# the catalogue link is an attribute rather than the key.
+#
+# Two sources feed one natural key:
+#
+#   * the catalogue snapshot — every item, sold or not, because fct_daily_stock_snapshot needs a row
+#     for the products that did NOT sell;
+#   * the distinct product names on this batch's sale lines — 93.4% of the shop's revenue.
+#
+# They meet on `item_ref = 'name:' || normalised(name)`, so a catalogue item and a sold product with
+# the same name are one product. The catalogue wins when both exist: its attributes are richer, and
+# a name-only product has nothing but a name.
+#
+# The three version statements mirror build_dim_branch deliberately. A shared builder would have to
+# generate the SQL, and generated SQL is what nobody can read in a pull request; two literal blocks
+# side by side are easy to diff. **If you change one, change the other** — T15 checks both tables
+# with the same rule, which is what catches a divergence.
+# =============================================================================================
+
+_DROP_INCOMING_ITEM_SQL = "drop table if exists incoming_item"
+
+_INCOMING_ITEM_SQL = r"""
+create temp table incoming_item on commit drop as
+with catalogue as (
+    select 'name:' || regexp_replace(btrim(lower(i.name)), '\s+', ' ', 'g') as item_ref,
+           regexp_replace(btrim(i.name), '\s+', ' ', 'g')                    as item_name,
+           i.source_id                                                       as inventory_item_id,
+           upper(regexp_replace(btrim(i.sku), '\s+', ' ', 'g'))              as sku,
+           coalesce(
+               nullif(regexp_replace(btrim(i.category), '\s+', ' ', 'g'), ''),
+               'Uncategorised'
+           )                                                                 as category,
+           nullif(regexp_replace(btrim(i.uom), '\s+', ' ', 'g'), '')         as uom,
+           i.price                                                           as unit_price,
+           i.cost_price                                                      as unit_cost,
+           true                                                              as is_catalogue_item
+    from public.stg_inventory_items i
+    where i.run_id = %(run_id)s
+),
+sold as (
+    -- A line with no name has no product identity at all. It is not dropped here: rule C-01
+    -- quarantines it when the facts are built, so the revenue stays visible as rejected.
+    select 'name:' || regexp_replace(btrim(lower(s.name)), '\s+', ' ', 'g') as item_ref,
+           -- One identity per normalised name, so the display name must not depend on which row
+           -- arrived first. The alphabetically first spelling is arbitrary but stable.
+           min(regexp_replace(btrim(s.name), '\s+', ' ', 'g'))               as item_name
+    from public.stg_sales_transaction_items s
+    where s.run_id = %(run_id)s
+      and s.name is not null
+      and btrim(s.name) <> ''
+    group by 1
+)
+select c.item_ref, c.item_name, c.inventory_item_id, c.sku, c.category, c.uom,
+       c.unit_price, c.unit_cost, c.is_catalogue_item
+from catalogue c
+union all
+select s.item_ref, s.item_name, null, null, 'Uncategorised', null, null, null, false
+from sold s
+where not exists (select 1 from catalogue c where c.item_ref = s.item_ref)
+"""
+
+# Two catalogue rows that normalise to one name would collapse into one product, and the surviving
+# `inventory_item_id` would be whichever row the planner happened to return first — which is how one
+# branch's cost price ends up on another branch's demand. The dimension has no branch column
+# (doc section 6.1), so this cannot be represented: stop, and let the contract be revised.
+_DUPLICATE_CATALOGUE_SQL = """
+select item_ref, string_agg(inventory_item_id::text, ', ' order by inventory_item_id)
+from incoming_item
+where is_catalogue_item
+group by item_ref
+having count(*) > 1
+"""
+
+_CLOSE_CHANGED_ITEMS_SQL = """
+update public.dim_item as d
+set valid_to = %(d)s,
+    is_current = false
+from incoming_item as i
+where d.item_ref = i.item_ref
+  and d.is_current
+  and d.valid_from < %(d)s
+  and (d.item_name, d.inventory_item_id, d.sku, d.category, d.uom,
+       d.unit_price, d.unit_cost, d.is_catalogue_item)
+      is distinct from
+      (i.item_name, i.inventory_item_id, i.sku, i.category, i.uom,
+       i.unit_price, i.unit_cost, i.is_catalogue_item)
+"""
+
+_UPSERT_ITEM_VERSION_SQL = """
+insert into public.dim_item (
+    item_ref, item_name, inventory_item_id, sku, category, uom,
+    unit_price, unit_cost, is_catalogue_item, valid_from, valid_to, is_current
+)
+select i.item_ref, i.item_name, i.inventory_item_id, i.sku, i.category, i.uom,
+       i.unit_price, i.unit_cost, i.is_catalogue_item, %(d)s, null, true
+from incoming_item as i
+left join public.dim_item as d
+       on d.item_ref = i.item_ref
+      and d.is_current
+where d.item_key is null
+   or d.valid_from = %(d)s
+on conflict (item_ref, valid_from) do update
+set item_name         = excluded.item_name,
+    inventory_item_id = excluded.inventory_item_id,
+    sku               = excluded.sku,
+    category          = excluded.category,
+    uom               = excluded.uom,
+    unit_price        = excluded.unit_price,
+    unit_cost         = excluded.unit_cost,
+    is_catalogue_item = excluded.is_catalogue_item,
+    valid_to          = null,
+    is_current        = true
+"""
+
+_UNCHANGED_ITEMS_SQL = """
+select count(*)
+from incoming_item as i
+join public.dim_item as d
+  on d.item_ref = i.item_ref
+ and d.is_current
+where d.valid_from < %(d)s
+"""
+
+
+def build_dim_item(conn: psycopg.Connection, batch: Batch) -> DimensionBuild:
+    """Bring ``dim_item`` up to date with this batch's products, SCD Type 2."""
+    run_id = batch.parent_run_id
+    business_date: date = batch.business_date
+
+    conn.execute(_DROP_INCOMING_ITEM_SQL)
+    conn.execute(_INCOMING_ITEM_SQL, {"run_id": run_id})
+
+    duplicates = conn.execute(_DUPLICATE_CATALOGUE_SQL).fetchall()
+    if duplicates:
+        listed = "; ".join(f"{ref} ({ids})" for ref, ids in duplicates)
+        raise DimensionError(
+            "two catalogue items normalise to the same product name, so their identity is "
+            f"ambiguous: {listed}. The item dimension has no branch column, so it cannot hold both "
+            "versions; the contract needs revising before this batch can run."
+        )
+
+    closed = conn.execute(_CLOSE_CHANGED_ITEMS_SQL, {"d": business_date}).rowcount
+    written = conn.execute(_UPSERT_ITEM_VERSION_SQL, {"d": business_date}).rowcount
+    unchanged = conn.execute(_UNCHANGED_ITEMS_SQL, {"d": business_date}).fetchone()[0]
+
+    return DimensionBuild(
+        table="dim_item",
         rows_written=written,
         rows_closed=closed,
         rows_unchanged=unchanged,
