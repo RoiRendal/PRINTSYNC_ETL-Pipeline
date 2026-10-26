@@ -35,6 +35,7 @@ __all__ = [
     "FactBuild",
     "FactError",
     "SourceCounts",
+    "build_fct_daily_product_demand",
     "build_fct_daily_sales",
 ]
 
@@ -328,16 +329,17 @@ def _count(conn: psycopg.Connection, table: str, run_id) -> int:
     ).fetchone()[0]
 
 
-def build_fct_daily_sales(
-    conn: psycopg.Connection, batch: Batch, time_zone: str
-) -> FactBuild:
-    """Rebuild the daily sales fact for every business date this batch covers."""
-    params = {
+def _stage(conn: psycopg.Connection, batch: Batch, time_zone: str) -> dict[str, object]:
+    """Quarantine what cannot be used, then stage what can.
+
+    Every fact calls this, so the two cannot disagree about what was excluded — which is exactly
+    the disagreement T12 would catch, one fact later. Calling it twice in a batch is harmless: the
+    quarantine is idempotent and the temp tables are rebuilt from the same rows.
+    """
+    params: dict[str, object] = {
         "run": batch.parent_run_id,
         "batch": batch.batch_id,
         "tz": time_zone,
-        "start": batch.window_start,
-        "end": batch.window_end,
     }
 
     # --- cleaning: quarantine first, then use whatever is left --------------------------------
@@ -410,6 +412,15 @@ def build_fct_daily_sales(
             "branch dimension changed between the check and the join."
         )
 
+    return params
+
+
+def build_fct_daily_sales(
+    conn: psycopg.Connection, batch: Batch, time_zone: str
+) -> FactBuild:
+    """Rebuild the daily sales fact for every business date this batch covers."""
+    params = _stage(conn, batch, time_zone)
+
     conn.execute(_SALE_TOTALS_SQL)
     conn.execute(_LINE_TOTALS_SQL)
     conn.execute(_PAYMENT_TOTALS_SQL, params)
@@ -438,6 +449,127 @@ def build_fct_daily_sales(
 
     return FactBuild(
         table="fct_daily_sales",
+        business_dates=dates,
+        rows_written=written,
+        counts=counts,
+    )
+
+
+# =============================================================================================
+# fct_daily_product_demand                                     (doc section 6.1, rules A-02, A-04, B-04)
+#
+# One row per business_date x branch x item that sold. Deliberately not densified: a zero row would
+# be indistinguishable from a day the batch never processed, and the unsold items a reorder decision
+# needs live in fct_daily_stock_snapshot.
+#
+# Two steps, because the trailing demand average needs history that lives outside this batch's
+# window. The insert writes the measures; the update then fills in the average by reading the fact
+# as it now stands — the new rows plus whatever earlier batches wrote. Both happen inside the
+# caller's transaction, so the brief moment where the averages are placeholders is never visible.
+# =============================================================================================
+
+_DELETE_DEMAND_SQL = (
+    "delete from public.fct_daily_product_demand where business_date between %(start)s and %(end)s"
+)
+
+_DEMAND_BASE_SQL = r"""
+insert into public.fct_daily_product_demand (
+    business_date, branch_key, item_key, line_count, quantity_sold,
+    line_revenue, discount_total, revenue, cogs, is_costed,
+    demand_window_days, avg_daily_demand, forecast_demand_30d
+)
+select business_date,
+       branch_key,
+       item_key,
+       count(*),
+       coalesce(sum(quantity), 0)                                       as quantity_sold,
+       coalesce(sum(quantity * unit_price), 0)                          as line_revenue,
+       coalesce(sum(line_discount), 0)                                  as discount_total,
+       coalesce(sum(quantity * unit_price), 0)
+         - coalesce(sum(line_discount), 0)                              as revenue,
+       coalesce(sum(case when unit_cost is not null
+                         then quantity * unit_cost else 0 end), 0)      as cogs,
+       bool_and(unit_cost is not null)                                  as is_costed,
+       1, 0, 0
+from incoming_line
+where status = 'completed'
+group by 1, 2, 3
+"""
+
+# The denominator is the branch's **trading days** in the window, counted from fct_daily_sales —
+# not the days this product sold. A product that moved ten units on one day of seven would otherwise
+# average 10 a day and run the shelf empty on a forecast built from it. `demand_window_days` records
+# that denominator, so thin history is visible rather than folded into a number (rule B-13).
+_DEMAND_AVERAGE_SQL = r"""
+update public.fct_daily_product_demand as d
+set demand_window_days   = w.trading_days,
+    avg_daily_demand     = round(w.total_quantity::numeric / w.trading_days, 2),
+    forecast_demand_30d  = round(30 * w.total_quantity::numeric / w.trading_days, 2)
+from (
+    select cur.business_date,
+           cur.branch_key,
+           cur.item_key,
+           greatest(
+               (select count(*)
+                  from public.fct_daily_sales s
+                 where s.branch_key = cur.branch_key
+                   and s.business_date between cur.business_date - (%(window)s - 1)
+                                           and cur.business_date),
+               1
+           )::smallint                                                  as trading_days,
+           (select coalesce(sum(p.quantity_sold), 0)
+              from public.fct_daily_product_demand p
+             where p.branch_key = cur.branch_key
+               and p.item_key = cur.item_key
+               and p.business_date between cur.business_date - (%(window)s - 1)
+                                       and cur.business_date)              as total_quantity
+    from public.fct_daily_product_demand cur
+    where cur.business_date between %(start)s and %(end)s
+) w
+where d.business_date = w.business_date
+  and d.branch_key = w.branch_key
+  and d.item_key = w.item_key
+"""
+
+
+def build_fct_daily_product_demand(
+    conn: psycopg.Connection, batch: Batch, time_zone: str, demand_window_days: int
+) -> FactBuild:
+    """Rebuild the product demand fact for every business date this batch covers."""
+    params = _stage(conn, batch, time_zone)
+    params["start"] = batch.window_start
+    params["end"] = batch.window_end
+    params["window"] = demand_window_days
+
+    conn.execute(_DELETE_DEMAND_SQL, params)
+    conn.execute(_DEMAND_BASE_SQL, params)
+    conn.execute(_DEMAND_AVERAGE_SQL, params)
+
+    dates = tuple(
+        row[0]
+        for row in conn.execute(
+            "select business_date from public.fct_daily_product_demand "
+            "where business_date between %(start)s and %(end)s order by 1",
+            {"start": batch.window_start, "end": batch.window_end},
+        ).fetchall()
+    )
+    written = conn.execute(
+        "select count(*) from public.fct_daily_product_demand "
+        "where business_date between %(start)s and %(end)s",
+        {"start": batch.window_start, "end": batch.window_end},
+    ).fetchone()[0]
+
+    counts = {
+        table: SourceCounts(
+            table=table,
+            read=_count(conn, table, batch.parent_run_id),
+            quarantined=quarantined(conn, batch, table),
+        )
+        for table in ("sales_transactions", "sales_transaction_items", "payments")
+    }
+
+    return FactBuild(
+        table="fct_daily_product_demand",
         business_dates=dates,
         rows_written=written,
         counts=counts,
