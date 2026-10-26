@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "psync-extract"
 version = "0.1.0"
-description = "PRINTSYNC nightly analytics batch pipeline - Stage 1 (Extract). Reads one business day from PRINTSYNC over a read-only connection and writes it into the pipeline's own psync_analytics database."
+description = "PRINTSYNC nightly analytics batch pipeline - Stage 1 (Extract) and Stage 2 (Transform). Stage 1 reads one business day from PRINTSYNC over a read-only connection into the pipeline's own psync_analytics database; Stage 2 turns that handover into the dimensional tables the Load stage publishes. The distribution keeps its original name: renaming it would force a reinstall in every environment for no functional gain."
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
