@@ -270,10 +270,17 @@ column: no cleaning happens in this stage (see §7.3).
 | `id` | uuid | Primary key. |
 | `status` | text | `Pending`, `Designing`, `In Production`, `Ready for Pickup`, `Completed`, `Delivered`. Constrained at source. |
 | `amount` | numeric | Value of the order. |
+| `is_custom` | boolean | True when the order came in as a custom job rather than off the shelf. Added in revision 1.5 — see below. |
 | `customer_id` | uuid | Customer link. Nullable. |
 | `created_at` | timestamptz | When the order was raised. |
 | `updated_at` | timestamptz | Last change. Drives the window — maintained by trigger. |
 | `branch_id` | uuid | Branch. Carried as an attribute. |
+
+**Why `is_custom` is extracted (revision 1.5).** `fct_daily_order_status.custom_order_count` needs it,
+and the column exists at source — but §2.4 did not list it, so Stage 1 was reading the table without
+it. Found while building the Transformation stage's order-status fact, in the same way as the missing
+`sales_transaction_items.name` (revision 1.4): by checking the Transformation rules' inputs against
+what this document extracts.
 
 ### 2.5 `inventory_items`
 
@@ -506,6 +513,7 @@ no output needs.
 | `payments.voided_at` | `voided_at` | timestamptz | timestamptz | Pass-through |
 | `orders.id` | `source_id` | uuid | uuid | Rename |
 | `orders.status` | `status` | text | text | Pass-through |
+| `orders.is_custom` | `is_custom` | boolean | boolean | Pass-through (rev. 1.5) |
 | `orders.amount` | `amount` | numeric | numeric(14,2) | Type mapping |
 | `orders.customer_id` | `customer_id` | uuid | uuid | Pass-through |
 | `orders.created_at` | `created_at` | timestamptz | timestamptz | Pass-through |
@@ -724,6 +732,8 @@ Every problem below is specific to this source system, not a generic list.
 | 1.2 | 25 October 2026 | Removed the unspecified Parquet archive from Section 5 and stated that operational detail is deleted at 90 days rather than archived; added a note to Section 7.1 that `RETRY` is reported by the pipeline and performed by the orchestration layer. Both changes make the document describe what was built. Extraction scope, tables, columns, validation criteria and acceptance rules are unchanged. |
 | 1.3 | 25 October 2026 | Corrected three inconsistencies found while checking the document against its own contract. Section 1.3 named a script `extract.py`, which does not exist — the pipeline is the `psync_extract` package, run as `python -m psync_extract --date YYYY-MM-DD` or through the `extraction_flow` Prefect flow — and the stated Python version is now "3.12 or newer", since the development host runs 3.13. Section 6.1 called the staging key `id` when Section 6.2 renames it to `source_id`. Section 6.3 was missing four mappings (`orders.branch_id`, `inventory_items.updated_at`, `inventory_items.branch_id`, `business_settings.branch_id`) and now covers all 51 columns. No change to scope, tables, columns, checks or acceptance rules. |
 | 1.4 | 26 October 2026 | **Added `sales_transaction_items.name` to the extraction scope** (§2.2 and §6.3), at the request of the Transformation stage. Stage 2 identifies a product by the name printed on the sale line because `inventory_item_id` is null on 93.4 % of lines — the shop sells print services that were never catalogued — so without this column 93 % of revenue cannot be attributed to a product. The column is a pass-through, extracted unchanged; staging gained it through a new migration (`002_stg_item_name.sql`) rather than by editing the applied `001`. One column added, no column removed, no check or acceptance rule changed; the registry in `psync_extract.schema` and the items extractor now cover 52 columns instead of 51. |
+| 1.5 | 26 October 2026 | **Added `orders.is_custom` to the extraction scope** (§2.4 and §6.3), for the same reason as revision 1.4: `fct_daily_order_status.custom_order_count` needs it, and §2.4 did not list the column. Found by checking the Transformation stage's inputs against what this document extracts — the second such gap, which is what makes the practice worth keeping. The column is a pass-through; staging gained it through `004_stg_order_custom.sql`; the registry and
+the orders extractor now cover 53 columns. No check or acceptance rule changed. |
 
 ---
 
