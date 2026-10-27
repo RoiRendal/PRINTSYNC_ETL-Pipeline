@@ -7,8 +7,20 @@ pipeline `psync_nightly_analytics` (Extract → Transform → Load).
 current laboratory. Each stage's specification is the contract its code implements — code follows
 the document, never the other way round:
 
-- [Extraction specification](docs/Extraction/Data-Extraction-Documentation-for-PRINTSYNC.md) — Stage 1, implemented (rev 1.5)
-- [Transformation specification](docs/Transformation/Data-Transformation-Documentation-for-PRINTSYNC.md) — Stage 2, implemented (rev 1.3)
+- [Extraction specification](docs/Extraction/Data-Extraction-Documentation-for-PRINTSYNC.md) — Stage 1, implemented (rev 1.6)
+- [Transformation specification](docs/Transformation/Data-Transformation-Documentation-for-PRINTSYNC.md) — Stage 2, implemented (rev 1.5)
+
+## Constraints
+
+The course's ETL project rules, and where each one is enforced:
+
+| Constraint | How this pipeline holds it |
+| --- | --- |
+| Batch only | One business day per run. `python -m psync_extract --date YYYY-MM-DD` reads a fixed window and exits; there is no listener, poll loop or stream in either package. |
+| No Pandas | No Pandas, NumPy, Polars or Dask in the dependencies or the imports. Aggregation is set-based SQL in PostgreSQL, which is where the data already is. |
+| No Spark / Airflow / Kafka | None of them. The runtime dependencies are Psycopg and Pydantic Settings; Prefect is an **optional extra** (`pip install -e ".[orchestration]"`), so the base install contains no orchestration framework. |
+| Single machine | Both databases run locally — source `127.0.0.1:54322`, target `localhost:5432` — and the handover and logs are files on disk. Nothing is distributed. |
+| Read-only on tables | Three layers: the source login is read-only, every session sets `default_transaction_read_only = on` before its first read, and no module in `psync_extract` can issue DDL or DML. Writes go only to `psync_analytics`. |
 
 ## Deployment boundary
 
