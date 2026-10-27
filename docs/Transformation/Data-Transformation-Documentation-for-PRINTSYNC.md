@@ -109,10 +109,13 @@ four rebuilt business dates to the Load stage.
 
 **Tool.** A second Python package in the same repository, `psync_transform`, built the same way as
 `psync_extract`: **Psycopg 3** against `psync_analytics`, **Prefect 3** for orchestration and
-retries, Python 3.12 or newer. The transformation itself is **set-based SQL**, executed statement
-by statement through Psycopg; Python orchestrates, measures, validates, and records. Two entry
-points, as in Stage 1: `python -m psync_transform --date YYYY-MM-DD` and the `transformation_flow`
-Prefect flow.
+retries, Python 3.12 or newer. Prefect is an **optional extra**
+(`pip install -e ".[orchestration]"`), not a dependency of the package: the project's constraints
+rule out an orchestration framework in the pipeline itself, and the plain entry point below runs
+with nothing but Psycopg installed. The transformation itself is **set-based SQL**, executed
+statement by statement through Psycopg; Python orchestrates, measures, validates, and records. Two
+entry points, as in Stage 1: `python -m psync_transform --date YYYY-MM-DD` and the
+`transformation_flow` Prefect flow.
 
 **Why SQL and not Polars.** Lab 2 proposed Polars lazy frames for the conform step, and that is
 still the right answer *if the data has to leave the database*. It does not: the staged rows are
@@ -1253,8 +1256,9 @@ nothing; these are the failures this pipeline will actually have.
 | 1.0 | 26 October 2026 | Initial transformation specification. Profiling basis: the PRINTSYNC export of 2 October 2026. Records the input gap in the extraction contract (D1, P10) and the cost-coverage limit (B-10). |
 | 1.1 | 26 October 2026 | Closed the input gap by decision rather than by workaround. Stage 1 revision 1.4 adds `sales_transaction_items.name` (§2.2, §6.3), migration `002_stg_item_name.sql` adds the column to staging, and the schema registry and items extractor select it — 52 columns instead of 51. D1, F-02 and P10 now record the resolution and keep T1 as the guard for a staging table that predates the migration. This stage's own schema migration is renumbered to `003_transformation_schema.sql` to leave `002` to the extraction fix. No rule, check, grain or acceptance criterion changed. |
 | 1.2 | 26 October 2026 | Corrected three cross-references found while writing the schema migration. F-06 and S-20 pointed at check T5 when VAT conformance is T6, and T6's rate condition read "outside 0–100" while S-20 fails a rate of 0 — both now say **zero or above 100**, which is also what `dim_branch.vat_rate` enforces. No rule, threshold or acceptance criterion changed. |
-| 1.4 | 27 October 2026 | §10.1's REJECTED action now says the published fact rows for the affected dates are **cleared** rather than "the previous output stands". Found while running the orchestrator: the checks read committed state, so the build commits before validating — and on a critical failure, clearing is both possible and safer than leaving wrong rows where a reader would take them for truth. The dimensions are left alone, because reverting SCD2 would be destructive. One sentence in §10.1 and the decision table; no rule, threshold or check changed. |
 | 1.3 | 26 October 2026 | C-01 now quarantines **the sale**, not just the offending line. Found while building `fct_daily_sales`: rejecting only the line would leave its money in the daily fact through the header and remove it from the product fact, so the two would disagree about the same revenue — the exact failure T12 exists to catch. The rule's own justification already said the revenue should be rejected; only the action was under-specified. One case, one rule, no threshold changed. |
+| 1.4 | 27 October 2026 | §10.1's REJECTED action now says the published fact rows for the affected dates are **cleared** rather than "the previous output stands". Found while running the orchestrator: the checks read committed state, so the build commits before validating — and on a critical failure, clearing is both possible and safer than leaving wrong rows where a reader would take them for truth. The dimensions are left alone, because reverting SCD2 would be destructive. One sentence in §10.1 and the decision table; no rule, threshold or check changed. |
+| 1.5 | 27 October 2026 | **Prefect is now an optional extra, not a dependency.** §1.2 listed Prefect 3 as part of the tool stack without saying it is optional, which read as a required framework — and the project's constraints rule out an orchestration framework in the pipeline itself. The package declares `prefect` under `[project.optional-dependencies] orchestration`, so a base install contains no orchestrator and `python -m psync_transform --date YYYY-MM-DD` runs with nothing but Psycopg. This revision also reorders the history: revision 1.4 had been written above 1.3. No rule, grain, check or acceptance criterion changed. |
 
 ---
 
