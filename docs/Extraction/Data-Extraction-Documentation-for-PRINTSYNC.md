@@ -94,6 +94,9 @@ re-reads the whole history.
 
 **Tool:** the `psync_extract` Python package (Python 3.12 or newer — the development host runs
 3.13), using **Psycopg 3** with a server-side cursor and **Prefect 3** for orchestration and retries.
+Prefect is an **optional extra** (`pip install -e ".[orchestration]"`), not a dependency of the
+package: the project's constraints rule out an orchestration framework in the pipeline itself, and
+the plain entry point below runs with nothing but Psycopg installed.
 Two entry points call the same code: `python -m psync_extract --date YYYY-MM-DD` for a single day,
 and the `extraction_flow` Prefect flow for a scheduled or repeatable run. Python and Psycopg were
 chosen in Lab 1 and confirmed in Lab 2; nothing new is introduced here.
@@ -170,10 +173,10 @@ it does not import PRINTSYNC code.
 
 | Boundary | PRINTSYNC (the source) | The pipeline (ours) |
 | --- | --- | --- |
-| Codebase | Untouched. No files added or changed. | Separate repository: Python 3.12+, Psycopg 3, Prefect 3 |
+| Codebase | Untouched. No files added or changed. | Separate repository: Python 3.12+, Psycopg 3 (Prefect 3 optional, for scheduling only) |
 | Database | Read-only. No tables, columns, indexes, or triggers added. | Its own PostgreSQL database, `psync_analytics` |
 | Credentials | One read-only login, provisioned once as an access grant | Holds and manages its own connection settings |
-| Scheduling | None. PRINTSYNC does not start or know about the job. | Prefect 3 schedules and retries it |
+| Scheduling | None. PRINTSYNC does not start or know about the job. | Prefect 3, when its optional extra is installed; the plain CLI needs no scheduler |
 | Failure impact | None. If the pipeline breaks, the shop keeps trading. | Contained entirely within the pipeline |
 
 **One consequence worth stating plainly:** because the pipeline cannot write into the PRINTSYNC
@@ -732,8 +735,8 @@ Every problem below is specific to this source system, not a generic list.
 | 1.2 | 25 October 2026 | Removed the unspecified Parquet archive from Section 5 and stated that operational detail is deleted at 90 days rather than archived; added a note to Section 7.1 that `RETRY` is reported by the pipeline and performed by the orchestration layer. Both changes make the document describe what was built. Extraction scope, tables, columns, validation criteria and acceptance rules are unchanged. |
 | 1.3 | 25 October 2026 | Corrected three inconsistencies found while checking the document against its own contract. Section 1.3 named a script `extract.py`, which does not exist — the pipeline is the `psync_extract` package, run as `python -m psync_extract --date YYYY-MM-DD` or through the `extraction_flow` Prefect flow — and the stated Python version is now "3.12 or newer", since the development host runs 3.13. Section 6.1 called the staging key `id` when Section 6.2 renames it to `source_id`. Section 6.3 was missing four mappings (`orders.branch_id`, `inventory_items.updated_at`, `inventory_items.branch_id`, `business_settings.branch_id`) and now covers all 51 columns. No change to scope, tables, columns, checks or acceptance rules. |
 | 1.4 | 26 October 2026 | **Added `sales_transaction_items.name` to the extraction scope** (§2.2 and §6.3), at the request of the Transformation stage. Stage 2 identifies a product by the name printed on the sale line because `inventory_item_id` is null on 93.4 % of lines — the shop sells print services that were never catalogued — so without this column 93 % of revenue cannot be attributed to a product. The column is a pass-through, extracted unchanged; staging gained it through a new migration (`002_stg_item_name.sql`) rather than by editing the applied `001`. One column added, no column removed, no check or acceptance rule changed; the registry in `psync_extract.schema` and the items extractor now cover 52 columns instead of 51. |
-| 1.5 | 26 October 2026 | **Added `orders.is_custom` to the extraction scope** (§2.4 and §6.3), for the same reason as revision 1.4: `fct_daily_order_status.custom_order_count` needs it, and §2.4 did not list the column. Found by checking the Transformation stage's inputs against what this document extracts — the second such gap, which is what makes the practice worth keeping. The column is a pass-through; staging gained it through `004_stg_order_custom.sql`; the registry and
-the orders extractor now cover 53 columns. No check or acceptance rule changed. |
+| 1.5 | 26 October 2026 | **Added `orders.is_custom` to the extraction scope** (§2.4 and §6.3), for the same reason as revision 1.4: `fct_daily_order_status.custom_order_count` needs it, and §2.4 did not list the column. Found by checking the Transformation stage's inputs against what this document extracts — the second such gap, which is what makes the practice worth keeping. The column is a pass-through; staging gained it through `004_stg_order_custom.sql`; the registry and the orders extractor now cover 53 columns. No check or acceptance rule changed. |
+| 1.6 | 27 October 2026 | **Prefect is now an optional extra, not a dependency.** §1.3 and §1.6 described Prefect 3 as part of the tool stack without saying it is optional, which read as a required framework — and the project's constraints rule out an orchestration framework in the pipeline itself. The package now declares `prefect` under `[project.optional-dependencies] orchestration`, so a base install contains no orchestrator and `python -m psync_extract --date YYYY-MM-DD` runs with nothing but Psycopg; `flow.py` raises a message naming the extra when it is absent. Both rows of §1.6 that mentioned Prefect now say it is optional. No table, column, check or acceptance rule changed, and this revision also joins a line in the 1.5 row that had wrapped inside a table cell. |
 
 ---
 
