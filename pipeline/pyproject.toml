@@ -10,9 +10,16 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "psycopg[binary]>=3.1",
-    "prefect>=3.0",
     "pydantic-settings>=2.2",
 ]
+
+[project.optional-dependencies]
+# Prefect is a convenience wrapper, not a requirement: both stages run from the command line with
+# nothing but Psycopg, and the project's constraints rule out an orchestration framework in the
+# pipeline itself. Keeping it out of `dependencies` makes the base install match that constraint
+# instead of merely appearing to. Install it only to schedule runs:
+#     pip install -e ".[orchestration]"
+orchestration = ["prefect>=3.0"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

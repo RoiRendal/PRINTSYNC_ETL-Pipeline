@@ -6,6 +6,10 @@ Nothing is reimplemented here, so what a demo runs and what a schedule runs cann
 It is kept separate from the pipeline module on purpose — Prefect is the orchestration layer, and
 the extraction has to work whether or not a scheduler is available. See ``python -m psync_extract``
 for the version that needs no server at all.
+
+Prefect is an **optional extra**, not a dependency (``pip install -e ".[orchestration]"``). That
+keeps the installed package free of an orchestration framework, which is one of the project's
+constraints, while leaving the scheduled path one import away.
 """
 
 from __future__ import annotations
@@ -13,7 +17,14 @@ from __future__ import annotations
 from datetime import date
 from pathlib import Path
 
-from prefect import flow
+try:
+    from prefect import flow
+except ImportError as exc:  # the base install, which has no orchestration framework
+    raise ImportError(
+        "The Prefect flows are an optional extra and Prefect is not installed. "
+        'Install it with: pip install -e ".[orchestration]"\n'
+        "The pipeline itself does not need it: python -m psync_extract --date YYYY-MM-DD"
+    ) from exc
 
 from psync_extract.config import load_settings
 from psync_extract.pipeline import RunResult, run_extraction
