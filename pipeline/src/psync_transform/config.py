@@ -148,6 +148,15 @@ class Settings(BaseSettings):
         """
         return self.psync_data_dir / "logs" / "transform"
 
+    @property
+    def exports_directory(self) -> Path:
+        """Where a batch's quarantine export is written (doc section 9).
+
+        Outside ``logs/`` on purpose: retention prunes the logs at 90 days and is scoped to that
+        directory, so an export is not operational detail that ages out.
+        """
+        return self.psync_data_dir / "exports"
+
     @field_validator("connect_timeout_seconds")
     @classmethod
     def _not_negative(cls, value: int, info: ValidationInfo) -> int:
