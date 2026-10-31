@@ -187,7 +187,7 @@ cannot resolve a surrogate key that does not exist yet.
 9  fct_daily_stock_snapshot  A-07          delete-and-insert for the target date only
 10 fct_daily_order_status    A-05          delete-and-insert by business_date
 11 validation                T3…T17        reconciliation, keys, integrity, business rules
-12 decide, record, hand over §10, §8       one transaction, then the manifest
+12 decide, record, hand over §10, §8       one transaction, then the log
 ```
 
 **Assumptions that could change the output.** Each one is a real condition of this data, not a
@@ -1025,7 +1025,8 @@ counts and timestamps only — no customer data (Section 9).
 | **Operational retention** | **90 days.** Per-table rows in `transformation_runs` and the two log files of each batch. Useful while a problem is fresh, and no longer. |
 | **Audit retention** | **24 months.** The run-level row, `transformation_rule_counts`, and `quarantine_rows`. These are the evidence that a published figure was produced correctly and that a given record was excluded for a stated reason. |
 | **Why the quarantine is kept as long as the audit record** | A question about last year's revenue ("why is this day lower than the till?") is answered by the quarantine, not by the run row. Deleting it at 90 days would leave the audit trail saying a record was rejected while destroying the record. |
-| **Storage location** | The `psync_analytics` database, which the pipeline owns, and the evidence folder named by `PSYNC_DATA_DIR` — the same one Stage 1 writes to. This stage reads the handover from `<data dir>/handover/` and writes its logs to `<data dir>/logs/transform/`. The default is the repository's `data/`; the layout is tracked in git and its contents are not. Never in the PRINTSYNC database. |
+| **Storage location** | The `psync_analytics` database, which the pipeline owns, and the evidence folder named by `PSYNC_DATA_DIR` — the same one Stage 1 writes to. This stage reads the handover from `<data dir>/handover/`, writes its logs to `<data dir>/logs/transform/`, and its exports to `<data dir>/exports/<batch_id>/`. The default is the repository's `data/`; the layout is tracked in git and its contents are not. Never in the PRINTSYNC database. |
+| **Exports (derived evidence)** | `<data dir>/exports/<batch_id>/` holds a rendering of the batch's quarantine for a reader with no database: `quarantine.csv` (one row per rejected record), `quarantine_summary.csv` (counts per rule), `_reconciliation.json` (read = output + rejected, with the threshold verdict) and a `README.txt`. Produced on demand by `python -m psync_transform --export <batch_id>`, never by a batch run, and therefore with no ledger row and no log of its own. **Not pruned**: the 90-day job is scoped to `logs/`, so an export outlives it. |
 | **Access** | Write: the pipeline's service login only. Read: the analytics and development team. Delete: the automated retention job only — no human has delete rights, so nothing can be removed early by hand. |
 | **Sensitive data** | The quarantine stores the offending row as this stage's columns: identifiers, product names, quantities, amounts, timestamps. **No customer data** — Stage 1 does not extract `customers` or `sales_transactions.customer`, so there is none to store. Product names and amounts are commercial data, not personal data, and they are the minimum needed to explain a rejection. |
 | **Archiving** | None. Detail is deleted at 90 days rather than compressed, for the same reason Stage 1 gives: an archive with no defined format, consumer, or replay procedure is a promise nobody keeps. If an archive is wanted, §6.1 defines the format first. |
@@ -1037,6 +1038,27 @@ and source-to-staging reconciliation. These logs record cleaning actions, conver
 validation failures, and rejected records. They share a database and a retention policy shape, and
 nothing else — a reader looking for "why was this row rejected" must land in this stage's tables,
 not in Stage 1's.
+
+**On the export.** The quarantine lives in `quarantine_rows`, and that table is the record. The
+export is a rendering of it, produced when someone has to read it without a database client. Four
+things keep it from becoming a second version of the truth — the objection `handover.py` raises
+against copying rows, which this feature has to answer rather than ignore:
+
+- **What it is.** A CSV of one batch's rejected rows, a summary of the rules that caught them, and a
+  reconciliation of the batch's arithmetic — all derived by `SELECT` from `quarantine_rows` and
+  `transformation_runs`. Nothing is recomputed from staging: the batch already decided, and deriving
+  its numbers a second time would be a second opinion nobody asked for.
+- **Where it is.** `<data dir>/exports/<batch_id>/`, deliberately outside `logs/`. Retention prunes
+  logs at 90 days and is scoped to that directory, so an export does not age out with operational
+  detail. It is evidence, and evidence is not detail.
+- **Who reads it.** The panel and the analytics team, in a spreadsheet, on a machine with no database
+  and no client installed. That is the whole reason it exists: for anyone with `psql`, the table was
+  already the answer.
+- **Why it is not authoritative.** Delete the folder and nothing is lost — the rows are still in the
+  table. Re-export the same batch and the files are byte-identical: the row order is fixed, the
+  summary is ordered by count, and the timestamp column is each row's own `quarantined_at` rather
+  than the moment of export. A file that could differ between two exports would be a second version
+  of the truth; one that cannot is a rendering.
 
 ---
 
@@ -1083,8 +1105,8 @@ result.
 | Metadata | The `transformation_runs` run-level row: `batch_id`, `parent_run_id`, window, status, counts, decision, `code_version` |
 | Rule counts | `transformation_rule_counts` for the batch — what each rule changed |
 | Validation results | The outcome of every check in §7 |
-| Rejects | `quarantine_rows` for the batch, with rule ID and reason — handed over for reporting, not for repair |
-| Manifest | `<batch_id>.handover.json`, written beside the log, listing the above and the dates it covers |
+| Rejects | `quarantine_rows` for the batch, with rule ID and reason — handed over for reporting, not for repair. The same rows are exportable as CSV (`exports/<batch_id>/quarantine.csv` and `quarantine_summary.csv`) for a reader with no database — see §9. |
+| Manifest | **None, and deliberately.** The handover to Load is the run-level row in `transformation_runs` and the batch log `<batch_id>.json`: the row is the record a consumer queries, the log is the copy a reader opens. Stage 1 writes a manifest because Stage 2 has to *find* its input by business date, and a file is how it does that; this stage has no such reader, and a second file listing what the ledger already holds would be a copy free to fall out of step with it. |
 | Explicitly **not** claimed | No loading, no indexing, no partitioning, no dashboard query. Stage 2's promise is that the transformed tables are correct, complete, and traceable — not that they are published. |
 
 ### 10.4 Worked example
@@ -1272,6 +1294,7 @@ nothing; these are the failures this pipeline will actually have.
 | 1.4 | 27 October 2026 | §10.1's REJECTED action now says the published fact rows for the affected dates are **cleared** rather than "the previous output stands". Found while running the orchestrator: the checks read committed state, so the build commits before validating — and on a critical failure, clearing is both possible and safer than leaving wrong rows where a reader would take them for truth. The dimensions are left alone, because reverting SCD2 would be destructive. One sentence in §10.1 and the decision table; no rule, threshold or check changed. |
 | 1.5 | 27 October 2026 | **Prefect is now an optional extra, not a dependency.** §1.2 listed Prefect 3 as part of the tool stack without saying it is optional, which read as a required framework — and the project's constraints rule out an orchestration framework in the pipeline itself. The package declares `prefect` under `[project.optional-dependencies] orchestration`, so a base install contains no orchestrator and `python -m psync_transform --date YYYY-MM-DD` runs with nothing but Psycopg. This revision also reorders the history: revision 1.4 had been written above 1.3. No rule, grain, check or acceptance criterion changed. |
 | 1.6 | 31 October 2026 | **The batch's evidence moved into the same folder as Stage 1's, and a batch now leaves two files.** §8 described a single JSON log "on the pipeline host" and §9 named no location beyond the same phrase, which was true of a path nobody had written down. Both now name the evidence folder: `PSYNC_DATA_DIR`, defaulting to the repository's `data/`, with the handover read from `<data dir>/handover/` and this stage's logs written to `<data dir>/logs/transform/`. §8 gains the text narrative beside the JSON record — the same shape as Stage 1's, deliberately, so a reader who has followed one stage's log can follow the other's — and §9's deletion row now says a batch's two files go together and that the job cannot reach `handover/`, which is this stage's only input. No rule, grain, check or acceptance criterion changed. |
+| 1.7 | 31 October 2026 | **The quarantine can now leave the database.** §9 described the quarantine only as a table, which is the "SQL" half of the evidence and unreadable to anyone without a `psql` session, and §10.3 handed the rejects over as rows. `python -m psync_transform --export <batch_id>` now writes `quarantine.csv`, `quarantine_summary.csv`, `_reconciliation.json` and a `README.txt` to `<data dir>/exports/<batch_id>/`. §9 gains an Exports row and a note stating what the export is, where it lives, who reads it, and why it is a rendering rather than a second version of the truth — the objection `handover.py` raises against copying rows, answered rather than ignored. The export sits outside `logs/`, so the 90-day job cannot prune it. **Also corrects a claim the code never met:** §10.3 listed a `<batch_id>.handover.json` "written beside the log", and no such file is written — `handover.py` only *reads* a manifest, and this stage's sole writer is `runlog.write_log`. The row now says there is no manifest and why: the ledger row and the log are the handover, and a second file listing what the ledger already holds would be a copy free to drift from it. No rule, grain, check or acceptance criterion changed. |
 
 ---
 
