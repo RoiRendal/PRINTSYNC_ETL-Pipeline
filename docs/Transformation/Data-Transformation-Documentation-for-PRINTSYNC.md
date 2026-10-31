@@ -715,7 +715,7 @@ only.
 | `records_rejected` | `integer` | no | Rows quarantined |
 | `records_modified` | `integer` | no | Sum of the rule counts. **Not** part of the reconciliation (§7) |
 | `validation_results` | `jsonb` | yes | `{"T1":"PASS", …}` |
-| `decision` | `text` | yes | `APPROVED` / `APPROVED WITH WARNING` / `MANUAL REVIEW` / `REJECTED` / `SKIPPED` |
+| `decision` | `text` | yes | `APPROVED` / `APPROVED WITH WARNING` / `MANUAL REVIEW` / `REJECTED`. The check constraint also accepts `SKIPPED`, which the pipeline never writes — see §10.1. |
 | `error_code` | `text` | yes | |
 | `error_message` | `text` | yes | |
 | `code_version` | `text` | no | `psync_transform 0.1.0 / rules 1.0` |
@@ -1076,7 +1076,7 @@ caveats", "look at this", and "stop".
 | One or more critical checks fail | **REJECTED** | Stop. Clear the published fact rows for the affected dates, so no wrong row stands, and record the run as `failed`. Retry up to 3 times with backoff, then alert. |
 | The input contract is not met (T1) | **REJECTED** | Stop before reading. This is D1's failure mode and it must be loud. |
 | Quarantined records exceed 1 % of `records_read` | **MANUAL REVIEW** | Hold the batch. At this volume, 1 % means a rule has broken, not that the data is dirty. |
-| The same `batch_id` already succeeded and the handover is unchanged | **SKIPPED** | Stop without error. The day is already transformed. |
+| The same `batch_id` already succeeded and the handover is unchanged | *(no decision — rebuild)* | Re-run it. The rebuild is idempotent: the facts are replaced by `business_date` and the dimension versions upsert on their natural key, so a second run publishes the same rows rather than a second set. There is no skip, and the note below says why. |
 | The extraction's closed-day flag is set for the target date | **APPROVED WITH WARNING** | Hand over; `fct_daily_sales` may legitimately have no row for the day (T14) |
 
 **The rejection-rate threshold is fixed in advance: 1 %.** At the measured volume — about 28 sale
@@ -1087,6 +1087,23 @@ should look before it becomes a number nobody questions. The same threshold as S
 same reason, and it is stated here before any batch has been run so it cannot be chosen to fit a
 result.
 
+**On the skip.** Revision 1.0 listed a `SKIPPED` decision for "the same `batch_id` already succeeded
+and the handover is unchanged", by analogy with Stage 1's V3. It was never built, and it should stay
+unbuilt, because the condition cannot tell the two cases apart:
+
+- **Input unchanged, output would be too.** A rebuild costs a fraction of a second and writes the
+  same rows. Skipping saves nothing worth a branch.
+- **Input unchanged, output should not be.** This is the case that matters: a rule or a fact query
+  changed, the handover did not. A skip keyed on "already succeeded" would keep publishing the old
+  numbers, and `code_version` is too coarse to catch it — `psync_transform 0.1.0 / rules 1.0` changes
+  only when someone remembers to bump it, and a bug fix is exactly when nobody does.
+
+Stage 1 skips because re-extracting the same window returns the same rows; the source is the only
+thing that could have changed. This stage's output depends on rules that live in this repository, so
+"already ran" is not evidence that "would produce the same answer". The `decision` column still
+accepts `SKIPPED` — narrowing a check constraint would mean a migration for a value nothing writes —
+but the pipeline never sets it.
+
 ### 10.2 Who decides
 
 | Decision | Automatic or manual | Responsible role |
@@ -1095,7 +1112,6 @@ result.
 | APPROVED WITH WARNING | Automatic, with a flag | Data team reviews within one business day |
 | REJECTED | Automatic stop; manual restart | Data team investigates and re-runs |
 | MANUAL REVIEW | Manual | Data team lead approves or rejects before anything proceeds |
-| SKIPPED | Automatic | None |
 
 ### 10.3 Handover to the Load stage
 
@@ -1297,6 +1313,7 @@ nothing; these are the failures this pipeline will actually have.
 | 1.7 | 31 October 2026 | **The quarantine can now leave the database.** §9 described the quarantine only as a table, which is the "SQL" half of the evidence and unreadable to anyone without a `psql` session, and §10.3 handed the rejects over as rows. `python -m psync_transform --export <batch_id>` now writes `quarantine.csv`, `quarantine_summary.csv`, `_reconciliation.json` and a `README.txt` to `<data dir>/exports/<batch_id>/`. §9 gains an Exports row and a note stating what the export is, where it lives, who reads it, and why it is a rendering rather than a second version of the truth — the objection `handover.py` raises against copying rows, answered rather than ignored. The export sits outside `logs/`, so the 90-day job cannot prune it. **Also corrects a claim the code never met:** §10.3 listed a `<batch_id>.handover.json` "written beside the log", and no such file is written — `handover.py` only *reads* a manifest, and this stage's sole writer is `runlog.write_log`. The row now says there is no manifest and why: the ledger row and the log are the handover, and a second file listing what the ledger already holds would be a copy free to drift from it. No rule, grain, check or acceptance criterion changed. |
 | 1.8 | 31 October 2026 | **The submission archive now exists, and this stage contributes to it.** §9's Archiving row said "None", which matched Stage 1's position when it was written. Stage 1 revision 1.8 defines a dated zip of the whole evidence folder, taken on demand, so this row now says what this stage puts in it — its logs and its exports, unchanged — and that nothing it owns is archived separately, because a second archive of the same rows is a second thing to keep in step. No rule, grain, check or acceptance criterion changed. |
 | 1.9 | 31 October 2026 | **Dimension versions are dated by the day the thing was first sold, not by the batch date.** M-02 and M-03 said `valid_from = business_date`, while J-01 looks a version up on the line's own date — which the look-back window can put up to `LOOKBACK_DAYS` earlier. A product first sold on a look-back day therefore had no version on the day it was sold, and the fact build stopped with `FactError: 4 sale line(s) have no product version`. Found by the end-to-end run for 2026-10-18, whose window reached back to 2026-10-15; the 2026-10-17 batch had hidden it because its sales were dated the same day as its batch, and the worked example in §10.4 would have failed the same way. Both rules now anchor on an `effective_date` — the earliest sale date in the batch for that branch or product, falling back to the business date when it did not sell — and a version left at the wrong date by a failed attempt is moved back rather than duplicated, so a retry repairs the dimension instead of colliding with it. No threshold, check or grain changed. |
+| 1.10 | 31 October 2026 | **The `SKIPPED` decision is withdrawn, because it was never built and should not be.** §10.1 listed it for "the same `batch_id` already succeeded and the handover is unchanged", by analogy with Stage 1's V3 — but the string appears nowhere in `psync_transform`, and a re-run rebuilds and publishes the same rows. The row now says that plainly, §10.2 no longer lists a role for it, and a note records why the shortcut stays refused: this stage's output depends on rules that live in this repository, so "already ran" is not evidence that "would produce the same answer", and `code_version` is too coarse to tell a rule change from a re-run. §8's column table says the constraint still accepts the value, which it does. No rule, threshold, check or grain changed. |
 
 ---
 
