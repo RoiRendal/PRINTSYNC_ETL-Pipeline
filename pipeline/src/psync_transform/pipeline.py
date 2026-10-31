@@ -236,8 +236,8 @@ def _transform(
     dimensions_started = time.perf_counter()
     with connect_target(settings) as conn:
         date_build = build_dim_date(conn, batch, settings.demand_window_days)
-        branch_build = build_dim_branch(conn, batch)
-        item_build = build_dim_item(conn, batch)
+        branch_build = build_dim_branch(conn, batch, time_zone=settings.run_timezone)
+        item_build = build_dim_item(conn, batch, time_zone=settings.run_timezone)
     trace.step(
         "dimensions",
         f"dim_date {date_build.rows_written}, dim_branch {branch_build.rows_written} "
