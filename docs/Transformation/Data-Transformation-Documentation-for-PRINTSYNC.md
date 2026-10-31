@@ -948,8 +948,9 @@ looks. Here, someone should.
 ## 8. Transformation Metadata and Log Specification
 
 Every batch writes to `transformation_runs` (one row per output table, plus a run-level row),
-`transformation_rule_counts` (one row per rule per table), and one JSON log file per batch on the
-pipeline host. **Extraction metadata is referenced, never duplicated**: `parent_run_id` points at
+`transformation_rule_counts` (one row per rule per table), and two files per batch in the pipeline
+host's evidence folder — a JSON record and a text narrative, described at the end of this section.
+**Extraction metadata is referenced, never duplicated**: `parent_run_id` points at
 the extraction run, and Stage 1's `pipeline_runs` row remains the record of what was read and
 whether it was sound.
 
@@ -999,10 +1000,21 @@ whether it was sound.
   that failed mid-way leaves the previous output untouched, because each date's write is one
   transaction.
 
-**The log file.** One JSON file per batch, written by writing a temporary file and renaming it into
-place, so a crash never leaves a half-written log that looks complete. Named
-`<safe batch_id>.json` — the batch ID contains no colon, unlike Stage 1's `run_key`, but the same
-sanitiser is used so the two stages behave identically.
+**The two log files.** Every batch leaves a pair of files sharing one stem, `<batch_id>`, in
+`<data dir>/logs/transform/`:
+
+| File | What it is | When it is written |
+| --- | --- | --- |
+| `<stem>.json` | The **record**: the batch's identity and window, the counts per output table, the outcome of every check, the rule counts, the decision and any error. | Once, at the end, by writing a temporary file and renaming it into place, so a crash never leaves a half-written log that looks complete. |
+| `<stem>.log` | The **narrative**: one line per step — `2026-10-31 13:41:33+0800 \| INFO \| facts \| sales 1, demand 1, stock 0, order status 0 rows in 0.5s`. | Continuously, flushed as each step completes. |
+
+The batch ID contains no colon, unlike Stage 1's `run_key`, but the same sanitiser is used so the
+two stages behave identically. The narrative is the same shape as Stage 1's, deliberately: a reader
+who has followed one stage's log can follow the other's. It is also the only trace of a batch that
+died — it ends in a `FAILED` line naming the exception, and no JSON is written at all.
+
+Both files are renderings of the same step list, so they cannot disagree. Both carry identifiers,
+counts and timestamps only — no customer data (Section 9).
 
 ---
 
@@ -1010,14 +1022,14 @@ sanitiser is used so the two stages behave identically.
 
 | Item | Rule |
 | --- | --- |
-| **Operational retention** | **90 days.** Per-table rows in `transformation_runs` and the JSON logs. Useful while a problem is fresh, and no longer. |
+| **Operational retention** | **90 days.** Per-table rows in `transformation_runs` and the two log files of each batch. Useful while a problem is fresh, and no longer. |
 | **Audit retention** | **24 months.** The run-level row, `transformation_rule_counts`, and `quarantine_rows`. These are the evidence that a published figure was produced correctly and that a given record was excluded for a stated reason. |
 | **Why the quarantine is kept as long as the audit record** | A question about last year's revenue ("why is this day lower than the till?") is answered by the quarantine, not by the run row. Deleting it at 90 days would leave the audit trail saying a record was rejected while destroying the record. |
-| **Storage location** | The `psync_analytics` database, which the pipeline owns. JSON logs on the pipeline host, one file per batch. Never in the PRINTSYNC database. |
+| **Storage location** | The `psync_analytics` database, which the pipeline owns, and the evidence folder named by `PSYNC_DATA_DIR` — the same one Stage 1 writes to. This stage reads the handover from `<data dir>/handover/` and writes its logs to `<data dir>/logs/transform/`. The default is the repository's `data/`; the layout is tracked in git and its contents are not. Never in the PRINTSYNC database. |
 | **Access** | Write: the pipeline's service login only. Read: the analytics and development team. Delete: the automated retention job only — no human has delete rights, so nothing can be removed early by hand. |
 | **Sensitive data** | The quarantine stores the offending row as this stage's columns: identifiers, product names, quantities, amounts, timestamps. **No customer data** — Stage 1 does not extract `customers` or `sales_transactions.customer`, so there is none to store. Product names and amounts are commercial data, not personal data, and they are the minimum needed to explain a rejection. |
 | **Archiving** | None. Detail is deleted at 90 days rather than compressed, for the same reason Stage 1 gives: an archive with no defined format, consumer, or replay procedure is a promise nobody keeps. If an archive is wanted, §6.1 defines the format first. |
-| **Deletion** | Automated, and never before the retention period expires or while a batch is under investigation. The retention job runs nightly, reports what it deleted (`prune_*` return counts), and cannot delete a run-level row, a rule count, or a quarantine row younger than 24 months. |
+| **Deletion** | Automated, and never before the retention period expires or while a batch is under investigation. The retention job runs nightly, reports what it deleted (`prune_*` return counts), and cannot delete a run-level row, a rule count, or a quarantine row younger than 24 months. It deletes a batch's two log files together, and it is scoped to the log directory: it cannot reach `handover/`, which is this stage's only input. |
 | **Operational versus audit, kept apart** | Conflating them is how a team either hoards everything or deletes the evidence. Detail expires; the accounting of what happened does not. |
 
 **Separate from Stage 1, deliberately.** Extraction logs record retrieval errors, extraction counts,
@@ -1259,6 +1271,7 @@ nothing; these are the failures this pipeline will actually have.
 | 1.3 | 26 October 2026 | C-01 now quarantines **the sale**, not just the offending line. Found while building `fct_daily_sales`: rejecting only the line would leave its money in the daily fact through the header and remove it from the product fact, so the two would disagree about the same revenue — the exact failure T12 exists to catch. The rule's own justification already said the revenue should be rejected; only the action was under-specified. One case, one rule, no threshold changed. |
 | 1.4 | 27 October 2026 | §10.1's REJECTED action now says the published fact rows for the affected dates are **cleared** rather than "the previous output stands". Found while running the orchestrator: the checks read committed state, so the build commits before validating — and on a critical failure, clearing is both possible and safer than leaving wrong rows where a reader would take them for truth. The dimensions are left alone, because reverting SCD2 would be destructive. One sentence in §10.1 and the decision table; no rule, threshold or check changed. |
 | 1.5 | 27 October 2026 | **Prefect is now an optional extra, not a dependency.** §1.2 listed Prefect 3 as part of the tool stack without saying it is optional, which read as a required framework — and the project's constraints rule out an orchestration framework in the pipeline itself. The package declares `prefect` under `[project.optional-dependencies] orchestration`, so a base install contains no orchestrator and `python -m psync_transform --date YYYY-MM-DD` runs with nothing but Psycopg. This revision also reorders the history: revision 1.4 had been written above 1.3. No rule, grain, check or acceptance criterion changed. |
+| 1.6 | 31 October 2026 | **The batch's evidence moved into the same folder as Stage 1's, and a batch now leaves two files.** §8 described a single JSON log "on the pipeline host" and §9 named no location beyond the same phrase, which was true of a path nobody had written down. Both now name the evidence folder: `PSYNC_DATA_DIR`, defaulting to the repository's `data/`, with the handover read from `<data dir>/handover/` and this stage's logs written to `<data dir>/logs/transform/`. §8 gains the text narrative beside the JSON record — the same shape as Stage 1's, deliberately, so a reader who has followed one stage's log can follow the other's — and §9's deletion row now says a batch's two files go together and that the job cannot reach `handover/`, which is this stage's only input. No rule, grain, check or acceptance criterion changed. |
 
 ---
 

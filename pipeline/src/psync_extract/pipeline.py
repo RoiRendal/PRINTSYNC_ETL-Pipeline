@@ -25,7 +25,7 @@ from psync_extract.decisions import Decision, decide, status_for
 from psync_extract.extract import branches, business_settings, inventory, items, orders, payments, sales
 from psync_extract.handover import HandoverPackage, build_handover, write_handover
 from psync_extract.rejects import ORPHAN_REASON, reject_orphans
-from psync_extract.runlog import build_log, write_log
+from psync_extract.runlog import RunTrace, build_log, log_stem, write_log
 from psync_extract.runs import RunRecord, TableRun, finish_run, start_run
 from psync_extract.staging import reset_run, write_rows
 from psync_extract.validation import (
@@ -93,13 +93,49 @@ def run_extraction(
     settings: Settings,
     business_date: date,
     *,
+    log_directory: Path | None = None,
+    handover_directory: Path | None = None,
+) -> RunResult:
+    """Run one business day through the whole pipeline.
+
+    Both directories default to the evidence folder in ``settings``, so a caller that does not care
+    cannot put the logs somewhere the next stage will not look (doc section 5).
+
+    The run's timeline is opened before the first check and closed after the last, so a run that
+    fails at any point still leaves the lines describing how far it got (doc section 4).
+    """
+    log_directory = log_directory or settings.log_directory
+    handover_directory = handover_directory or settings.handover_directory
+
+    run_id = str(uuid4())
+    run_key = build_run_key(settings.pipeline_name, business_date)
+    trace = RunTrace(
+        log_directory,
+        log_stem(run_key, run_id),
+        title=f"{run_key} business day {business_date.isoformat()} run {run_id[:8]}",
+    )
+    try:
+        return _extract(
+            settings, business_date, run_id, run_key, trace, log_directory, handover_directory
+        )
+    except BaseException as error:
+        trace.failed(error)
+        raise
+    finally:
+        trace.close()
+
+
+def _extract(
+    settings: Settings,
+    business_date: date,
+    run_id: str,
+    run_key: str,
+    trace: RunTrace,
     log_directory: Path,
     handover_directory: Path,
 ) -> RunResult:
-    """Run one business day through the whole pipeline."""
+    """The body of one run. Split out so the timeline is closed on every exit path."""
     started = datetime.now(timezone.utc)
-    run_id = str(uuid4())
-    run_key = build_run_key(settings.pipeline_name, business_date)
     window = resolve_window(
         business_date, time_zone=settings.run_timezone, lookback_days=settings.lookback_days
     )
@@ -107,6 +143,7 @@ def run_extraction(
 
     def stop_early(decision: Decision, tables: tuple[TableRun, ...] = ()) -> RunResult:
         """Record and log a run that never reached extraction, then return."""
+        trace.step("decision", f"{decision.decision}: {decision.reason}")
         record = RunRecord(
             run_id=run_id, run_key=run_key, pipeline_name=settings.pipeline_name,
             business_date=business_date, window=window, status=status_for(decision.decision),
@@ -126,12 +163,14 @@ def run_extraction(
                 status=record.status,
                 tables={t.table: {"rows_read": t.rows_read} for t in tables},
                 validation_results=record.validation_results,
+                steps=trace.steps,
                 error_code=record.error_code, error_message=record.error_message,
             ),
         )
         return RunResult(run_id, run_key, business_date, decision, results, tables, path, None)
 
     # --- pre-flight ---------------------------------------------------------------------------
+    preflight_started = time.perf_counter()
     results["V1"] = check_source_connection(settings)
     if results["V1"].status == "FAIL":
         return stop_early(decide(results))
@@ -161,6 +200,13 @@ def run_extraction(
         return stop_early(
             decide(results, already_completed=resolution.already_completed)
         )
+
+    trace.step(
+        "preflight",
+        "V1-V4 " + ", ".join(f"{k}={v.status}" for k, v in sorted(results.items()))
+        + f"; window {window.window_start:%Y-%m-%d %H:%M} to {window.window_end:%Y-%m-%d %H:%M}",
+        seconds=time.perf_counter() - preflight_started,
+    )
 
     # --- extract and write --------------------------------------------------------------------
     tables: list[TableRun] = []
@@ -196,8 +242,20 @@ def run_extraction(
                     duration_seconds=int(time.perf_counter() - table_started),
                 )
             )
+            trace.step(
+                f"extract.{extractor.table}",
+                f"{written} rows",
+                seconds=time.perf_counter() - table_started,
+            )
 
+        reject_started = time.perf_counter()
         removed = reject_orphans(target, run_id)
+
+    trace.step(
+        "reject",
+        f"{sum(removed.values())} orphan rows removed",
+        seconds=time.perf_counter() - reject_started,
+    )
 
     # Rejected rows are subtracted from what was extracted, so V7's read = extracted + rejected
     # balances by construction rather than by assertion.
@@ -214,6 +272,7 @@ def run_extraction(
     ]
 
     # --- validation ---------------------------------------------------------------------------
+    validation_started = time.perf_counter()
     results["V5"] = check_identifiers(settings, run_id)
     results["V6"] = check_primary_key_uniqueness(settings, run_id)
     results["V7"] = check_row_parity(
@@ -224,10 +283,16 @@ def run_extraction(
     results["V8"] = check_non_empty(
         settings, run_id, window, closed_day=settings.closed_day == business_date
     )
+    trace.step(
+        "validate",
+        "V5-V8 " + ", ".join(f"{k}={results[k].status}" for k in ("V5", "V6", "V7", "V8")),
+        seconds=time.perf_counter() - validation_started,
+    )
 
     total_read = sum(t.rows_read for t in tables)
     total_rejected = sum(t.rows_rejected for t in tables)
     decision = decide(results, rows_read=total_read, rows_rejected=total_rejected)
+    trace.step("decision", f"{decision.decision}: {decision.reason}")
 
     # --- record, log, hand over ---------------------------------------------------------------
     record = RunRecord(
@@ -237,8 +302,14 @@ def run_extraction(
         error_code=next((r.error_code for r in results.values() if r.error_code), None),
         error_message=decision.reason, started_at=started,
     )
+    record_started = time.perf_counter()
     with connect_target(settings) as target:
         finish_run(target, record)
+    trace.step(
+        "record",
+        f"{len(tables) + 1} ledger rows",
+        seconds=time.perf_counter() - record_started,
+    )
 
     log_path = write_log(
         log_directory,
@@ -257,6 +328,7 @@ def run_extraction(
             },
             validation_results=record.validation_results,
             rejects={t.table: t.rows_rejected for t in tables if t.rows_rejected},
+            steps=trace.steps,
             error_code=record.error_code, error_message=record.error_message,
         ),
     )
@@ -264,6 +336,10 @@ def run_extraction(
     package = build_handover(record, decision)
     if package is not None:
         write_handover(handover_directory, package)
+    trace.step(
+        "handover",
+        "manifest written" if package is not None else f"no manifest for {decision.decision}",
+    )
 
     return RunResult(
         run_id=run_id, run_key=run_key, business_date=business_date, decision=decision,

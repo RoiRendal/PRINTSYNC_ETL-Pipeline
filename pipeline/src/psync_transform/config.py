@@ -34,6 +34,12 @@ __all__ = [
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 _ENV_FILE = _PROJECT_ROOT / ".env"
 
+# .../pipeline -> the repository. The evidence folder sits beside docs/, not inside the package.
+# The default is absolute for the same reason Stage 1's is: the handover this stage reads must not
+# move with the caller's working directory (see the validator below).
+_REPOSITORY_ROOT = _PROJECT_ROOT.parent
+DEFAULT_DATA_DIR = _REPOSITORY_ROOT / "data"
+
 DEFAULT_PIPELINE_NAME = "psync_nightly_analytics"
 DEFAULT_RUN_TIMEZONE = "Asia/Manila"
 DEFAULT_CONNECT_TIMEOUT_SECONDS = 10
@@ -85,12 +91,12 @@ class Settings(BaseSettings):
         "over for this business date'.",
     )
 
-    # --- Where the handover lives (doc section 1.1) ---------------------------------------
-    handover_directory: Path = Field(
-        default=Path("handover"),
-        description="The directory holding the extraction handover manifests. A relative path is "
-        "resolved against the pipeline directory, so the batch finds them whatever the working "
-        "directory happens to be when a scheduler starts it.",
+    # --- Where the handover and the logs live (doc sections 1.1, 8) ------------------------
+    psync_data_dir: Path = Field(
+        default=DEFAULT_DATA_DIR,
+        description="The evidence folder, shared with Stage 1. The handover manifests are read "
+        "from beneath it and this stage's logs are written to it. One knob, so the two stages "
+        "cannot be pointed at different folders.",
     )
 
     # --- Behaviour (doc sections 5.6, 10.1) -----------------------------------------------
@@ -117,16 +123,30 @@ class Settings(BaseSettings):
             ) from exc
         return value
 
-    @field_validator("handover_directory")
+    @field_validator("psync_data_dir")
     @classmethod
-    def _resolve_handover_directory(cls, value: Path) -> Path:
-        """Anchor a relative path to the pipeline directory, never to the working directory.
+    def _resolve_data_dir(cls, value: Path) -> Path:
+        """Anchor a relative path to the repository, never to the working directory.
 
-        Stage 1's CLI defaults its handover directory to ``handover`` relative to wherever it was
-        started. Reading it the same way here would make the batch's input depend on the caller's
-        current directory, which is not a property of the batch.
+        Stage 1's CLI used to default its handover directory to ``handover`` relative to wherever it
+        was started. Reading it the same way here would make the batch's input depend on the
+        caller's current directory, which is not a property of the batch.
         """
-        return value if value.is_absolute() else (_PROJECT_ROOT / value)
+        return value if value.is_absolute() else (_REPOSITORY_ROOT / value)
+
+    @property
+    def handover_directory(self) -> Path:
+        """Where the extraction handover manifests are read from (doc section 1.1)."""
+        return self.psync_data_dir / "handover"
+
+    @property
+    def log_directory(self) -> Path:
+        """Where this stage's run logs go, inside the evidence folder.
+
+        A directory per stage, so a reader can tell Stage 1's logs from Stage 2's without being
+        told which filename prefix belongs to which stage.
+        """
+        return self.psync_data_dir / "logs" / "transform"
 
     @field_validator("connect_timeout_seconds")
     @classmethod

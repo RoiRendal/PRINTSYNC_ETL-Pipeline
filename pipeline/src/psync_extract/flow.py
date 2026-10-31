@@ -35,15 +35,17 @@ __all__ = ["extraction_flow"]
 @flow(name="psync_nightly_analytics", log_prints=True)
 def extraction_flow(
     business_date: date | None = None,
-    log_directory: Path = Path("logs"),
-    handover_directory: Path = Path("handover"),
+    data_dir: Path | None = None,
 ) -> RunResult:
-    """Extract one business day and return the decision."""
-    settings = load_settings()
+    """Extract one business day and return the decision.
+
+    ``data_dir`` is the evidence folder. Unset means whatever ``PSYNC_DATA_DIR`` says, which in turn
+    defaults to the repository's ``data/``; the logs and the handover are derived from it, so this
+    is the only path a caller can redirect.
+    """
+    settings = load_settings(**({"psync_data_dir": data_dir} if data_dir else {}))
     day = business_date or settings.resolved_business_date()
 
-    result = run_extraction(
-        settings, day, log_directory=log_directory, handover_directory=handover_directory
-    )
+    result = run_extraction(settings, day)
     print(f"{result.run_key}: {result.decision.decision} — {result.decision.reason}")
     return result

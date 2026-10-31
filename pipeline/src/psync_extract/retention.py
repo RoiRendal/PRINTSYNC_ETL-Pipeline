@@ -2,8 +2,8 @@
 
 Two lifetimes, deliberately different:
 
-* **operational detail** — 90 days. The per-table rows and the JSON logs. Useful while a problem is
-  fresh, and no longer.
+* **operational detail** — 90 days. The per-table rows and the run logs, both the JSON record and
+  the text narrative. Useful while a problem is fresh, and no longer.
 * **audit summary** — 24 months. The run-level row. It is the evidence that a published figure was
   produced correctly, and a question about last year's numbers arrives long after anyone would think
   to check.
@@ -14,7 +14,6 @@ run is still under investigation. Nothing here touches a run younger than its li
 
 from __future__ import annotations
 
-import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -23,34 +22,71 @@ import psycopg
 __all__ = [
     "AUDIT_DAYS",
     "OPERATIONAL_DAYS",
-    "prune_json_logs",
+    "prune_logs",
     "prune_pipeline_runs",
 ]
 
 OPERATIONAL_DAYS = 90
 AUDIT_DAYS = 730
 
+# The two files one run leaves behind, which age out together.
+LOG_SUFFIXES = (".log", ".json")
 
-def prune_json_logs(
-    directory: Path | str,
+
+def prune_logs(
+    data_dir: Path | str,
     *,
     older_than_days: int = OPERATIONAL_DAYS,
     now: datetime | None = None,
-) -> int:
-    """Delete JSON logs older than the operational lifetime; return how many went."""
-    directory = Path(directory)
-    if not directory.is_dir():
-        return 0
+) -> dict[str, int]:
+    """Delete run logs older than the operational lifetime; return what went.
 
-    cutoff = (now or datetime.now(timezone.utc)) - timedelta(days=older_than_days)
-    cutoff_epoch = cutoff.timestamp()
+    The directory is derived from ``data_dir`` rather than accepted as an argument, so this cannot
+    be pointed at ``handover/`` or ``exports/``. The handover manifests are Stage 2's only input and
+    the exports are what the submission bundle is built from; neither is operational detail, and a
+    retention job that could delete them would be one mistaken path away from destroying the
+    evidence it exists to keep.
 
-    removed = 0
-    for path in directory.glob("*.json"):
-        if path.stat().st_mtime < cutoff_epoch:
-            path.unlink()
-            removed += 1
-    return removed
+    A run's two files are deleted together. A text log without the record it belongs to — or a
+    record without its narrative — reads as evidence of a run whose other half was lost, when in
+    fact the run simply aged out.
+    """
+    logs = Path(data_dir) / "logs"
+    if not logs.is_dir():
+        raise FileNotFoundError(
+            f"no log directory at {logs}. Retention is scoped to <data dir>/logs; "
+            "check PSYNC_DATA_DIR rather than assuming there is nothing to prune."
+        )
+
+    cutoff_epoch = (
+        (now or datetime.now(timezone.utc)) - timedelta(days=older_than_days)
+    ).timestamp()
+
+    files = 0
+    pairs = 0
+    # The stage subfolders, and the logs directory itself for anything written straight into it.
+    for directory in [logs, *(p for p in sorted(logs.iterdir()) if p.is_dir())]:
+        stems = {
+            path.stem
+            for path in directory.iterdir()
+            if path.is_file() and path.suffix in LOG_SUFFIXES
+        }
+        for stem in sorted(stems):
+            present = [
+                directory / f"{stem}{suffix}"
+                for suffix in LOG_SUFFIXES
+                if (directory / f"{stem}{suffix}").exists()
+            ]
+            # The newer of the two decides, so a .log written a moment after its .json does not
+            # outlive it by a whole day.
+            if max(path.stat().st_mtime for path in present) >= cutoff_epoch:
+                continue
+            for path in present:
+                path.unlink()
+                files += 1
+            pairs += 1
+
+    return {"files": files, "pairs": pairs}
 
 
 def prune_pipeline_runs(

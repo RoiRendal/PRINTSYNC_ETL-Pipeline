@@ -32,13 +32,21 @@ __all__ = ["transformation_flow"]
 def transformation_flow(
     business_date: str | None = None,
     parent_run_id: str | None = None,
-    log_directory: Path | str = "logs",
+    data_dir: Path | None = None,
 ) -> None:
-    """Transform one extraction handover for PRINTSYNC."""
-    settings = load_settings(
-        business_date=business_date, parent_run_id=parent_run_id
-    )
-    result = run_transformation(settings, log_directory=log_directory)
+    """Transform one extraction handover for PRINTSYNC.
+
+    ``data_dir`` is the evidence folder shared with Stage 1: the handover is read from it and the
+    log is written to it, so redirecting one redirects the other.
+    """
+    overrides: dict[str, object] = {
+        "business_date": business_date,
+        "parent_run_id": parent_run_id,
+    }
+    if data_dir is not None:
+        overrides["psync_data_dir"] = data_dir
+    settings = load_settings(**overrides)
+    result = run_transformation(settings)
     print(f"decision   {result.decision.decision}")
     print(f"reason     {result.decision.reason}")
     if result.log_path:

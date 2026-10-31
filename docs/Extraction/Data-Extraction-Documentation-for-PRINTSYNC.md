@@ -376,7 +376,8 @@ extraction broke" from "the shop data is bad".
 ## 4. Extraction Metadata and Log Specification
 
 Every run writes to the `pipeline_runs` table in the pipeline's own `psync_analytics`
-database, and one JSON log file on the pipeline host. The grain is **one row per source table
+database, and two files to the pipeline host's evidence folder — a JSON record and a text
+narrative, described at the end of this section. The grain is **one row per source table
 per run, plus one run-level summary row** that carries the run's overall status and validation
 summary. The fields below are the contract.
 
@@ -416,19 +417,36 @@ summary. The fields below are the contract.
   overwrites that day's output rather than adding to it. `rows_read` against `rows_extracted`
   tells us whether a completed run actually moved all the data it found.
 
+**The two log files.** Every run leaves a pair of files sharing one stem,
+`<run_key>_<run_id[:8]>`, in `<data dir>/logs/extract/`:
+
+| File | What it is | When it is written |
+| --- | --- | --- |
+| `<stem>.json` | The **record**: the run's identity and window, the counts per table, the outcome of every check, the rejects, and any error. | Once, at the end, by writing a temporary file and renaming it into place, so a crash never leaves a half-written log that looks complete. |
+| `<stem>.log` | The **narrative**: one line per step — `2026-10-31 13:41:33+0800 \| INFO \| extract.payments \| 9 rows in 0.1s`. | Continuously, flushed as each step completes. |
+
+The narrative exists because the record cannot say *when*. The table above holds durations, but a
+database is not something a reader can follow, and it is not what survives beside the artifacts.
+The text log is also the only trace of a run that died: it ends in a `FAILED` line naming the
+exception, and no JSON is written at all, because a record is only written for a completed run.
+
+Both files are renderings of the same step list, so they cannot disagree about what happened. Both
+carry identifiers, counts and timestamps only — no customer data (Section 5, and Section 9 of the
+Transformation document for the same rule applied to its own logs).
+
 ---
 
 ## 5. Log Retention and Access
 
 | Item | Rule |
 | --- | --- |
-| **Operational log retention** | **90 days**, kept hot in the `pipeline_runs` table and as JSON files. Ninety days covers roughly three months of nightly runs, which is more than enough to investigate a failure that someone notices and reports. |
+| **Operational log retention** | **90 days**, kept hot in the `pipeline_runs` table and as the two log files of each run. Ninety days covers roughly three months of nightly runs, which is more than enough to investigate a failure that someone notices and reports. |
 | **Audit record retention** | **24 months.** The per-run summary — `run_key`, `business_date`, `status`, `rows_read`, `rows_extracted`, `rows_rejected`, and `validation_results` — is kept far longer than the detailed log, because it is the evidence that a published figure was produced correctly. |
 | **Justification** | Operational detail is only useful while a problem is fresh. Audit evidence has to outlive it, because a question about last year's numbers arrives long after anyone would think to check. |
-| **Storage location** | Run rows in the `psync_analytics` database, which the pipeline owns — never in the PRINTSYNC database. JSON log files sit on the pipeline host's filesystem, one file per run. |
+| **Storage location** | Run rows in the `psync_analytics` database, which the pipeline owns — never in the PRINTSYNC database. The log files sit on the pipeline host, in the evidence folder named by `PSYNC_DATA_DIR`: `<data dir>/logs/extract/` for this stage, `<data dir>/logs/transform/` for Stage 2, and `<data dir>/handover/` for the handover manifests. The default is the repository's `data/`; the layout is tracked in git and its contents are not. |
 | **Access permissions** | Write: the pipeline's service login only. Read: the analytics and development team. The pipeline's database login is read-only on `public` and cannot alter operational data. Logs contain no customer personal data — only identifiers, counts, and timestamps. |
-| **Archiving** | At 90 days, detailed JSON logs are deleted and the per-table rows are pruned from `pipeline_runs`. The run-level audit row stays in the database for 24 months. No compressed archive is produced — see the note below. |
-| **Deletion** | Logs are **never** deleted before the retention period expires, and never while a run is under investigation or a recovery is in progress. Deletion after the period is an automated job, not a manual one, so it cannot be forgotten or done early by hand. |
+| **Archiving** | At 90 days, a run's two log files are deleted **together** and the per-table rows are pruned from `pipeline_runs`. The run-level audit row stays in the database for 24 months. No compressed archive is produced — see the note below. |
+| **Deletion** | Logs are **never** deleted before the retention period expires, and never while a run is under investigation or a recovery is in progress. Deletion after the period is an automated job, not a manual one, so it cannot be forgotten or done early by hand. It is scoped to the log directory and cannot reach `handover/`, which is Stage 2's only input. |
 | **Operational versus audit** | Kept deliberately separate. Operational logs are disposable detail, deleted at 90 days. Audit records are the accountability trail, kept for 24 months. Conflating the two is how teams end up either hoarding everything or deleting evidence. |
 
 **On the archive.** Earlier revisions mentioned "that night's Parquet archive" once, in the storage
@@ -737,6 +755,7 @@ Every problem below is specific to this source system, not a generic list.
 | 1.4 | 26 October 2026 | **Added `sales_transaction_items.name` to the extraction scope** (§2.2 and §6.3), at the request of the Transformation stage. Stage 2 identifies a product by the name printed on the sale line because `inventory_item_id` is null on 93.4 % of lines — the shop sells print services that were never catalogued — so without this column 93 % of revenue cannot be attributed to a product. The column is a pass-through, extracted unchanged; staging gained it through a new migration (`002_stg_item_name.sql`) rather than by editing the applied `001`. One column added, no column removed, no check or acceptance rule changed; the registry in `psync_extract.schema` and the items extractor now cover 52 columns instead of 51. |
 | 1.5 | 26 October 2026 | **Added `orders.is_custom` to the extraction scope** (§2.4 and §6.3), for the same reason as revision 1.4: `fct_daily_order_status.custom_order_count` needs it, and §2.4 did not list the column. Found by checking the Transformation stage's inputs against what this document extracts — the second such gap, which is what makes the practice worth keeping. The column is a pass-through; staging gained it through `004_stg_order_custom.sql`; the registry and the orders extractor now cover 53 columns. No check or acceptance rule changed. |
 | 1.6 | 27 October 2026 | **Prefect is now an optional extra, not a dependency.** §1.3 and §1.6 described Prefect 3 as part of the tool stack without saying it is optional, which read as a required framework — and the project's constraints rule out an orchestration framework in the pipeline itself. The package now declares `prefect` under `[project.optional-dependencies] orchestration`, so a base install contains no orchestrator and `python -m psync_extract --date YYYY-MM-DD` runs with nothing but Psycopg; `flow.py` raises a message naming the extra when it is absent. Both rows of §1.6 that mentioned Prefect now say it is optional. No table, column, check or acceptance rule changed, and this revision also joins a line in the 1.5 row that had wrapped inside a table cell. |
+| 1.7 | 31 October 2026 | **The run's evidence moved into one folder, and a run now leaves two files.** §5's storage row named no path, and §4 described a single JSON log while the pipeline wrote to `pipeline/logs/` and `pipeline/handover/` — both relative to whatever directory the process was started in, so the artifacts followed the caller rather than the run. One `PSYNC_DATA_DIR` setting now names the evidence folder, defaulting to the repository's `data/`, and the log and handover paths are derived from it, so the two stages cannot be pointed at different folders. §4 gains the text narrative beside the JSON record: one line per step, flushed as each step completes, so a run that dies half way still says how far it got, ending in a `FAILED` line when it does. §5's retention and deletion rows now cover both files, deleted together, and state that the job is scoped to the log directory and cannot reach `handover/`. No table, column, check or acceptance rule changed. |
 
 ---
 
