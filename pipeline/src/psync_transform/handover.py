@@ -135,7 +135,8 @@ def find_manifest(
     if not directory.is_dir():
         raise HandoverError(
             f"the handover directory does not exist: {directory}. Stage 1 writes it beside its "
-            "logs; check HANDOVER_DIR and whether the extraction ran on this host."
+            "logs, under <PSYNC_DATA_DIR>/handover; check PSYNC_DATA_DIR and whether the extraction "
+            "ran on this host."
         )
 
     matches: list[Handover] = []

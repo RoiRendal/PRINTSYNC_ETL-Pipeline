@@ -59,19 +59,30 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="transform one specific extraction run; defaults to the most recent handover",
     )
-    parser.add_argument("--log-dir", type=Path, default=Path("logs"))
+    parser.add_argument(
+        "--data-dir",
+        type=Path,
+        default=None,
+        help="the evidence folder; defaults to PSYNC_DATA_DIR, then <repo>/data. "
+        "The handover is read from it and the log is written to it.",
+    )
     args = parser.parse_args(argv)
 
+    overrides: dict[str, object] = {
+        "business_date": args.date,
+        "parent_run_id": args.parent_run,
+    }
+    if args.data_dir is not None:
+        overrides["psync_data_dir"] = args.data_dir
+
     try:
-        settings = load_settings(
-            business_date=args.date, parent_run_id=args.parent_run
-        )
+        settings = load_settings(**overrides)
     except ConfigurationError as exc:
         print(f"configuration error: {exc}", file=sys.stderr)
         return 2
 
     try:
-        result = run_transformation(settings, log_directory=args.log_dir)
+        result = run_transformation(settings)
     except Exception as exc:  # noqa: BLE001 - the CLI is the last line of defence
         print(f"transformation error: {exc}", file=sys.stderr)
         return 1

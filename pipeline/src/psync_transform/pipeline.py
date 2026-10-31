@@ -17,9 +17,11 @@ for the window**: no wrong row stands, and a re-run after the fix republishes.
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Mapping, Sequence
 
 import psycopg
 
@@ -35,7 +37,7 @@ from psync_transform.facts import (
     build_fct_daily_stock_snapshot,
 )
 from psync_transform.handover import HandoverError
-from psync_transform.runlog import build_log, write_log
+from psync_transform.runlog import RunTrace, build_log, log_stem, write_log
 from psync_transform.runs import RuleCount, TableRecord, record_batch
 from psync_transform.validation import (
     check_business_date_boundary,
@@ -97,6 +99,7 @@ def _write_log(
     rule_counts: list[RuleCount],
     started: datetime,
     ended: datetime,
+    steps: Sequence[Mapping[str, object]] = (),
 ) -> Path:
     """Assemble and write the batch's log (doc section 8)."""
     status = "success" if "APPROVED" in decision.decision else "failed"
@@ -126,17 +129,49 @@ def _write_log(
             validation_results={
                 check_id: result.status for check_id, result in checks.items()
             },
+            steps=steps,
             code_version=code_version(),
         ),
     )
 
 
 def run_transformation(
-    settings: Settings, *, log_directory: Path | str = "logs"
+    settings: Settings, *, log_directory: Path | str | None = None
 ) -> RunResult:
-    """Run one transformation batch: resolve, check, build, validate, decide, record, log."""
+    """Run one transformation batch: resolve, check, build, validate, decide, record, log.
+
+    The log directory defaults to the evidence folder in ``settings``, so a caller that does not
+    care cannot put this stage's logs somewhere the other stage's will not be found.
+    """
+    log_directory = log_directory or settings.log_directory
     started = datetime.now(timezone.utc)
     batch = resolve_batch(settings)
+    trace = RunTrace(
+        log_directory,
+        log_stem(batch.batch_id),
+        title=(
+            f"{batch.batch_id} business day {batch.business_date.isoformat()} "
+            f"window {batch.window_start:%Y-%m-%d} to {batch.window_end:%Y-%m-%d} "
+            f"parent run {str(batch.parent_run_id)[:8]}"
+        ),
+    )
+    try:
+        return _transform(settings, batch, started, trace, log_directory)
+    except BaseException as error:
+        trace.failed(error)
+        raise
+    finally:
+        trace.close()
+
+
+def _transform(
+    settings: Settings,
+    batch: Batch,
+    started: datetime,
+    trace: RunTrace,
+    log_directory: Path | str,
+) -> RunResult:
+    """The body of one batch. Split out so the timeline is closed on every exit path."""
     checks: dict[str, object] = {}
     rule_counts: list[RuleCount] = []
 
@@ -144,6 +179,7 @@ def run_transformation(
         decision: Decision, tables: list[TableRecord], error_code: str | None
     ) -> RunResult:
         ended = datetime.now(timezone.utc)
+        record_started = time.perf_counter()
         with connect_target(settings) as conn:
             record_batch(
                 conn,
@@ -156,8 +192,14 @@ def run_transformation(
                 rule_counts=rule_counts,
                 error_code=error_code,
             )
+        trace.step(
+            "record",
+            f"{len(tables) + 1} ledger rows",
+            seconds=time.perf_counter() - record_started,
+        )
         log_path = _write_log(
-            log_directory, batch, checks, decision, tables, rule_counts, started, ended
+            log_directory, batch, checks, decision, tables, rule_counts, started, ended,
+            steps=trace.steps,
         )
         return RunResult(
             batch=batch,
@@ -167,9 +209,15 @@ def run_transformation(
         )
 
     # --- the input gate: T1 and T2, before a single row is written -----------------------------
+    gate_started = time.perf_counter()
     with connect_target(settings) as conn:
         checks["T1"] = check_input_contract(settings, batch.handover)
         checks["T2"] = check_handover_counts(settings, batch.handover)
+    trace.step(
+        "gate",
+        f"T1={checks['T1'].status}, T2={checks['T2'].status}",
+        seconds=time.perf_counter() - gate_started,
+    )
 
     gate_failed = [
         check_id for check_id in ("T1", "T2") if checks[check_id].is_critical_failure
@@ -185,11 +233,20 @@ def run_transformation(
         )
 
     # --- build: dimensions first, then facts (doc section 1.4) ---------------------------------
+    dimensions_started = time.perf_counter()
     with connect_target(settings) as conn:
         date_build = build_dim_date(conn, batch, settings.demand_window_days)
         branch_build = build_dim_branch(conn, batch)
         item_build = build_dim_item(conn, batch)
+    trace.step(
+        "dimensions",
+        f"dim_date {date_build.rows_written}, dim_branch {branch_build.rows_written} "
+        f"({branch_build.rows_closed} closed), dim_item {item_build.rows_written} "
+        f"({item_build.rows_closed} closed)",
+        seconds=time.perf_counter() - dimensions_started,
+    )
 
+    facts_started = time.perf_counter()
     with connect_target(settings) as conn:
         sales_build = build_fct_daily_sales(conn, batch, time_zone=settings.run_timezone)
         demand_build = build_fct_daily_product_demand(
@@ -198,6 +255,12 @@ def run_transformation(
         )
         stock_build = build_fct_daily_stock_snapshot(conn, batch, time_zone=settings.run_timezone)
         order_build = build_fct_daily_order_status(conn, batch, time_zone=settings.run_timezone)
+    trace.step(
+        "facts",
+        f"sales {sales_build.rows_written}, demand {demand_build.rows_written}, "
+        f"stock {stock_build.rows_written}, order status {order_build.rows_written} rows",
+        seconds=time.perf_counter() - facts_started,
+    )
 
     tables = [
         TableRecord("dim_date", 0, date_build.rows_written, 0, 0),
@@ -225,6 +288,7 @@ def run_transformation(
     total_rejected = sum(count.quarantined for count in counts.values())
 
     # --- validate on committed state ------------------------------------------------------------
+    validation_started = time.perf_counter()
     rule_counts = _rule_counts(settings, batch, (branch_build, item_build))
     checks["T3"] = check_record_reconciliation(settings, batch, counts)
     checks["T4"] = check_internal_money_arithmetic(settings, batch)
@@ -241,12 +305,20 @@ def run_transformation(
     checks["T15"] = check_version_continuity(settings)
     checks["T16"] = check_status_domain(settings, batch)
     checks["T17"] = check_item_identity(settings)
+    trace.step(
+        "validate",
+        f"T3-T17 {sum(1 for c in checks.values() if c.status == 'PASS')} PASS, "
+        f"{sum(1 for c in checks.values() if c.status == 'WARN')} WARN, "
+        f"{sum(1 for c in checks.values() if c.status == 'FAIL')} FAIL",
+        seconds=time.perf_counter() - validation_started,
+    )
 
     decision = decide(
         checks,
         records_read=total_read,
         records_quarantined=total_rejected,
     )
+    trace.step("decision", f"{decision.decision}: {decision.reason}")
 
     if decision.decision == REJECTED:
         with connect_target(settings) as conn:

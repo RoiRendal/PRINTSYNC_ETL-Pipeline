@@ -55,20 +55,25 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="business date (YYYY-MM-DD); defaults to yesterday in the run time zone",
     )
-    parser.add_argument("--log-dir", type=Path, default=Path("logs"))
-    parser.add_argument("--handover-dir", type=Path, default=Path("handover"))
+    parser.add_argument(
+        "--data-dir",
+        type=Path,
+        default=None,
+        help="the evidence folder; defaults to PSYNC_DATA_DIR, then <repo>/data. "
+        "The logs and the handover are derived from it.",
+    )
     args = parser.parse_args(argv)
 
     try:
-        settings = load_settings()
+        settings = load_settings(
+            **({"psync_data_dir": args.data_dir} if args.data_dir else {})
+        )
     except ConfigurationError as exc:
         print(f"configuration error: {exc}", file=sys.stderr)
         return 2
 
     day = args.date or settings.resolved_business_date()
-    result = run_extraction(
-        settings, day, log_directory=args.log_dir, handover_directory=args.handover_dir
-    )
+    result = run_extraction(settings, day)
     print(_summary(result))
 
     # A run that may not be handed over is a non-zero exit, so a scheduler notices.

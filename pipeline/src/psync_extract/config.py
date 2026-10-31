@@ -26,6 +26,13 @@ __all__ = ["ConfigurationError", "Settings", "load_settings"]
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 _ENV_FILE = _PROJECT_ROOT / ".env"
 
+# .../pipeline -> the repository. The evidence folder sits beside docs/, not inside the package:
+# what a defense needs to read should not be mixed in with the code that produced it (doc
+# section 5). The default is absolute, so the logs do not follow whatever directory a scheduler
+# happened to start the process in.
+_REPOSITORY_ROOT = _PROJECT_ROOT.parent
+DEFAULT_DATA_DIR = _REPOSITORY_ROOT / "data"
+
 DEFAULT_PIPELINE_NAME = "psync_nightly_analytics"
 DEFAULT_LOOKBACK_DAYS = 3
 DEFAULT_RUN_TIMEZONE = "Asia/Manila"
@@ -73,6 +80,29 @@ class Settings(BaseSettings):
     retry_count: int = DEFAULT_RETRY_COUNT
     retry_backoff_seconds: int = DEFAULT_RETRY_BACKOFF_SECONDS
 
+    # --- Where the evidence lives (doc section 5) ---------------------------------------
+    psync_data_dir: Path = Field(
+        default=DEFAULT_DATA_DIR,
+        description="The evidence folder. The logs, the handover manifests and the exports live "
+        "beneath it. One knob: moving it moves all of them together, so the two stages cannot end "
+        "up writing to different folders.",
+    )
+
+    @property
+    def log_directory(self) -> Path:
+        """Where this stage's run logs go, inside the evidence folder.
+
+        The stage name is a directory rather than a filename prefix: ``psync_nightly_analytics``
+        does not say "extraction" to a reader, and a flat folder made the two stages' logs
+        distinguishable only by reading the documentation.
+        """
+        return self.psync_data_dir / "logs" / "extract"
+
+    @property
+    def handover_directory(self) -> Path:
+        """Where the handover manifests go (doc section 7.3)."""
+        return self.psync_data_dir / "handover"
+
     @field_validator(
         "psync_source_dsn", "psync_target_dsn", "pipeline_name", "reference_branch"
     )
@@ -81,6 +111,17 @@ class Settings(BaseSettings):
         if not value or not value.strip():
             raise ValueError(f"{info.field_name.upper()} must not be blank")
         return value.strip()
+
+    @field_validator("psync_data_dir")
+    @classmethod
+    def _resolve_data_dir(cls, value: Path) -> Path:
+        """Anchor a relative path to the repository, never to the working directory.
+
+        ``PSYNC_DATA_DIR=data`` has to mean the same folder whether the pipeline was started from
+        the repository root or from ``pipeline/``; a scheduler's working directory is not a property
+        of the run.
+        """
+        return value if value.is_absolute() else (_REPOSITORY_ROOT / value)
 
     @field_validator("run_timezone")
     @classmethod
