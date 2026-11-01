@@ -249,6 +249,8 @@ def _readme(
         "Each line is:  time | level | [stage] | step | message.",
         "The stage is on every line, so a line read on its own still says whether it came from",
         "the extraction or the transformation.",
+        "Logs written before 1 November 2026 carry four columns and no stage; where that is the",
+        "case, the stage is the one in the filename.",
         "The steps run in order - the checks, then each table read, then validation, then the",
         "decision - so a line's position tells you what the pipeline was doing when it got",
         "there. A run that failed ends with a line marked ERROR and no .json, because a record",
