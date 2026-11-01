@@ -423,7 +423,7 @@ summary. The fields below are the contract.
 | File | What it is | When it is written |
 | --- | --- | --- |
 | `<stem>.json` | The **record**: the run's identity and window, the counts per table, the outcome of every check, the rejects, and any error. | Once, at the end, by writing a temporary file and renaming it into place, so a crash never leaves a half-written log that looks complete. |
-| `<stem>.log` | The **narrative**: one line per step — `2026-10-31 13:41:33+0800 \| INFO \| extract.payments \| 9 rows in 0.1s`. | Continuously, flushed as each step completes. |
+| `<stem>.log` | The **narrative**: one line per step — `2026-10-31 13:41:33+0800 \| INFO \| [Extraction] \| extract.payments \| 9 rows in 0.1s`. The stage is on every line, so a line quoted on its own still says which stage wrote it. | Continuously, flushed as each step completes. |
 
 The narrative exists because the record cannot say *when*. The table above holds durations, but a
 database is not something a reader can follow, and it is not what survives beside the artifacts.
@@ -431,8 +431,10 @@ The text log is also the only trace of a run that died: it ends in a `FAILED` li
 exception, and no JSON is written at all, because a record is only written for a completed run.
 
 Both files are renderings of the same step list, so they cannot disagree about what happened. Both
-carry identifiers, counts and timestamps only — no customer data (Section 5, and Section 9 of the
-Transformation document for the same rule applied to its own logs).
+name their stage — `"stage": "extraction"` in the record, `[Extraction]` on every line of the
+narrative — because the two stages' logs share one folder, and a file found on its own should not be
+ambiguous. Both carry identifiers, counts and timestamps only — no customer data (Section 5, and
+Section 9 of the Transformation document for the same rule applied to its own logs).
 
 ---
 
@@ -768,6 +770,7 @@ Every problem below is specific to this source system, not a generic list.
 | 1.6 | 27 October 2026 | **Prefect is now an optional extra, not a dependency.** §1.3 and §1.6 described Prefect 3 as part of the tool stack without saying it is optional, which read as a required framework — and the project's constraints rule out an orchestration framework in the pipeline itself. The package now declares `prefect` under `[project.optional-dependencies] orchestration`, so a base install contains no orchestrator and `python -m psync_extract --date YYYY-MM-DD` runs with nothing but Psycopg; `flow.py` raises a message naming the extra when it is absent. Both rows of §1.6 that mentioned Prefect now say it is optional. No table, column, check or acceptance rule changed, and this revision also joins a line in the 1.5 row that had wrapped inside a table cell. |
 | 1.7 | 31 October 2026 | **The run's evidence moved into one folder, and a run now leaves two files.** §5's storage row named no path, and §4 described a single JSON log while the pipeline wrote to `pipeline/logs/` and `pipeline/handover/` — both relative to whatever directory the process was started in, so the artifacts followed the caller rather than the run. One `PSYNC_DATA_DIR` setting now names the evidence folder, defaulting to the repository's `data/`, and the log and handover paths are derived from it, so the two stages cannot be pointed at different folders. §4 gains the text narrative beside the JSON record: one line per step, flushed as each step completes, so a run that dies half way still says how far it got, ending in a `FAILED` line when it does. §5's retention and deletion rows now cover both files, deleted together, and state that the job is scoped to the log directory and cannot reach `handover/`. No table, column, check or acceptance rule changed. |
 | 1.8 | 31 October 2026 | **The submission archive is now defined, reversing the position of revisions 1.2 to 1.7.** §5 said no archive was built, on the ground that an archive without a defined format, consumer or procedure is a promise nobody keeps — an argument this revision answers instead of overriding. The submission needs one artifact, so the note now specifies all four: a dated zip in `<data dir>/submission/`, holding the evidence folder with paths unchanged and a `MANIFEST.txt` of sizes and SHA-256; read by the panel on a machine with no database; built on demand by `python -m psync_extract.submission` and never scheduled; and failing when any of the four evidence folders is empty, with `--allow-incomplete` recording the omission in the manifest. The archive is a snapshot, not a backup, and does not replace retention. The Archiving and Storage rows now name it. No table, column, check or acceptance rule changed. |
+| 1.9 | 1 November 2026 | **The narrative names its stage on every line.** §4's sample line read `time \| level \| step \| message`, which is unambiguous only to a reader who already knows which stage wrote the file — and both stages' logs share `data/logs/`. Every line now carries `[Extraction]` after the level, and the JSON record carries `"stage": "extraction"`, so a file or a line found on its own says what it is. No table, column, check or acceptance rule changed. |
 
 ---
 
