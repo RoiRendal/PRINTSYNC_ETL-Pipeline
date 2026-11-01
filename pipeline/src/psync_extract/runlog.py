@@ -63,6 +63,7 @@ def build_log(
 ) -> dict[str, Any]:
     """Assemble the log payload. Plain data only, so it serialises without surprises."""
     return {
+        "stage": "extraction",
         "run_id": run_id,
         "run_key": run_key,
         "business_date": business_date,
@@ -134,9 +135,13 @@ class RunTrace:
         return tuple(dict(step) for step in self._steps)
 
     def _write(self, level: str, name: str, message: str) -> None:
-        """One line. The stamp carries its UTC offset, so a log line and a `timestamptz` row agree."""
+        """One line. The stamp carries its UTC offset, so a log line and a `timestamptz` row agree.
+
+        The stage is on every line rather than in a header, because the two stages' logs sit in the
+        same folder and a line copied out of context should still say which stage wrote it.
+        """
         stamp = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S%z")
-        self._handle.write(f"{stamp} | {level:<7} | {name} | {message}\n")
+        self._handle.write(f"{stamp} | {level:<7} | [Extraction] | {name} | {message}\n")
 
     def step(self, name: str, message: str, *, seconds: float | None = None) -> None:
         """Record one completed step, with how long it took when the caller measured it."""
