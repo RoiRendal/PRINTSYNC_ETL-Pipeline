@@ -300,7 +300,15 @@ def _transform(
     checks["T10"] = check_cost_coverage(settings, batch)
     checks["T11"] = check_business_rules(settings, batch)
     checks["T12"] = check_fact_reconciliation(settings, batch)
-    checks["T13"] = check_business_date_boundary(settings, batch, settings.run_timezone)
+    checks["T13"] = check_business_date_boundary(
+        settings,
+        batch,
+        settings.run_timezone,
+        written={
+            build.table: build.rows_written
+            for build in (sales_build, demand_build, order_build)
+        },
+    )
     checks["T14"] = check_non_empty_output(settings, batch)
     checks["T15"] = check_version_continuity(settings)
     checks["T16"] = check_status_domain(settings, batch)
