@@ -1006,15 +1006,17 @@ whether it was sound.
 | File | What it is | When it is written |
 | --- | --- | --- |
 | `<stem>.json` | The **record**: the batch's identity and window, the counts per output table, the outcome of every check, the rule counts, the decision and any error. | Once, at the end, by writing a temporary file and renaming it into place, so a crash never leaves a half-written log that looks complete. |
-| `<stem>.log` | The **narrative**: one line per step — `2026-10-31 13:41:33+0800 \| INFO \| facts \| sales 1, demand 1, stock 0, order status 0 rows in 0.5s`. | Continuously, flushed as each step completes. |
+| `<stem>.log` | The **narrative**: one line per step — `2026-10-31 13:41:33+0800 \| INFO \| [Transformation] \| facts \| sales 1, demand 1, stock 0, order status 0 rows in 0.5s`. The stage is on every line, so a line quoted on its own still says which stage wrote it. | Continuously, flushed as each step completes. |
 
 The batch ID contains no colon, unlike Stage 1's `run_key`, but the same sanitiser is used so the
 two stages behave identically. The narrative is the same shape as Stage 1's, deliberately: a reader
 who has followed one stage's log can follow the other's. It is also the only trace of a batch that
 died — it ends in a `FAILED` line naming the exception, and no JSON is written at all.
 
-Both files are renderings of the same step list, so they cannot disagree. Both carry identifiers,
-counts and timestamps only — no customer data (Section 9).
+Both files are renderings of the same step list, so they cannot disagree. Both name their stage —
+`"stage": "transformation"` in the record, `[Transformation]` on every line of the narrative —
+because the two stages' logs share one folder. Both carry identifiers, counts and timestamps only —
+no customer data (Section 9).
 
 ---
 
@@ -1314,6 +1316,7 @@ nothing; these are the failures this pipeline will actually have.
 | 1.8 | 31 October 2026 | **The submission archive now exists, and this stage contributes to it.** §9's Archiving row said "None", which matched Stage 1's position when it was written. Stage 1 revision 1.8 defines a dated zip of the whole evidence folder, taken on demand, so this row now says what this stage puts in it — its logs and its exports, unchanged — and that nothing it owns is archived separately, because a second archive of the same rows is a second thing to keep in step. No rule, grain, check or acceptance criterion changed. |
 | 1.9 | 31 October 2026 | **Dimension versions are dated by the day the thing was first sold, not by the batch date.** M-02 and M-03 said `valid_from = business_date`, while J-01 looks a version up on the line's own date — which the look-back window can put up to `LOOKBACK_DAYS` earlier. A product first sold on a look-back day therefore had no version on the day it was sold, and the fact build stopped with `FactError: 4 sale line(s) have no product version`. Found by the end-to-end run for 2026-10-18, whose window reached back to 2026-10-15; the 2026-10-17 batch had hidden it because its sales were dated the same day as its batch, and the worked example in §10.4 would have failed the same way. Both rules now anchor on an `effective_date` — the earliest sale date in the batch for that branch or product, falling back to the business date when it did not sell — and a version left at the wrong date by a failed attempt is moved back rather than duplicated, so a retry repairs the dimension instead of colliding with it. No threshold, check or grain changed. |
 | 1.10 | 31 October 2026 | **The `SKIPPED` decision is withdrawn, because it was never built and should not be.** §10.1 listed it for "the same `batch_id` already succeeded and the handover is unchanged", by analogy with Stage 1's V3 — but the string appears nowhere in `psync_transform`, and a re-run rebuilds and publishes the same rows. The row now says that plainly, §10.2 no longer lists a role for it, and a note records why the shortcut stays refused: this stage's output depends on rules that live in this repository, so "already ran" is not evidence that "would produce the same answer", and `code_version` is too coarse to tell a rule change from a re-run. §8's column table says the constraint still accepts the value, which it does. No rule, threshold, check or grain changed. |
+| 1.11 | 1 November 2026 | **The narrative names its stage on every line.** §8's sample line read `time \| level \| step \| message`, which only tells you the stage if you already know the filename — and both stages' logs share `data/logs/`. Every line now carries `[Transformation]` after the level, and the JSON record carries `"stage": "transformation"`, so a file or a line found on its own says what it is. No rule, threshold, check or grain changed. |
 
 ---
 
