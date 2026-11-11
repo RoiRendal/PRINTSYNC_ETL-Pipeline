@@ -408,15 +408,18 @@ No password, connection string or credential appears in any log field.
 
 ### 6.2 The two log files
 
-Following Stages 1 and 2, a run leaves **two** files in `<data dir>/logs/load/`, sharing one stem
-(`<batch_id>`):
+Following Stages 1 and 2, a run leaves **two** files in `<data dir>/logs/load/`, sharing one stem.
+The stem is `<batch_id>_<run_id[:8]>` — not the batch id alone, because a retried batch would then
+overwrite the narrative of the attempt that failed, which is the one someone needs to read.
 
-- `<batch_id>.json` — the record: written once, atomically, at the end. The `stage` field is
-  `"load"`, and the payload mirrors the run-level `load_runs` row. A run that fails never produces
-  one.
-- `<batch_id>.log` — the narrative: one line per step — `time | level | [Load] | step | message` —
-  flushed as it happens. Steps run in order: `preload`, each table's `copy`, `validate`, `decision`,
-  `record`. A failure ends with an `ERROR` line.
+- `<stem>.json` — the record: written once, atomically, at the end, with `"stage": "load"`. Its
+  payload mirrors the run-level `load_runs` row and adds the steps, the per-table counts and the
+  verdict. It is written **whenever the run reaches a verdict**, including `REJECTED` and
+  `MANUAL REVIEW` — a refusal is a result worth keeping. Only a run that never reaches one, because
+  it crashed, leaves no record.
+- `<stem>.log` — the narrative: one line per step — `time | level | [Load] | step | message` —
+  flushed as it happens. Steps run in order: `preload`, `copy`, `validate`, `decision`, `record`. A
+  crash ends with an `ERROR` line naming the attempt and the failure.
 
 ### 6.3 How the metadata is used
 
@@ -457,7 +460,8 @@ Following Stages 1 and 2, a run leaves **two** files in `<data dir>/logs/load/`,
 | L1–L12 all pass; L13 clean | Reconciliation matches, keys unique, no orphans, no nulls, amounts equal | **APPROVED** | Commit, mark `success`, publish the reporting tables | Automatic | None |
 | All critical checks pass; L13 reports rejects within 1 % | The batch is publishable but a few rows did not load | **APPROVED WITH WARNING** | Commit, flag the run for review within one business day | Automatic, with a flag | Data team |
 | One or more non-critical warnings beyond tolerance, or a small count difference within tolerance | A human should look before dashboards read it | **MANUAL REVIEW** | Roll back, hold publication, notify the data team lead | Manual | Data team lead approves or rejects |
-| Any critical check fails (L1–L12), or the transaction raises | The batch cannot be trusted | **REJECTED** | Roll back, record `failed`, retry up to **3 times** with 30 s backoff, then stop and alert | Automatic stop; manual restart | Data team investigates |
+| Any critical check fails (L1–L12) | The batch cannot be trusted | **REJECTED** | Roll back, record `failed` with the failing checks, stop | Automatic stop; manual restart | Data team investigates |
+| The transaction raises — a lock timeout, a dropped connection, a `COPY` error | Infrastructure, not data | **REJECTED** | Roll back, record `failed`, retry up to **3 times** with 30 s backoff, then stop and alert | Automatic, then manual | Data team investigates |
 | The handover is not `APPROVED` (L3) | No approved input | **REJECTED** | Stop before the transaction opens | Automatic | None |
 | Batch already loaded with `success` (L6) | Would duplicate a publication | **REJECTED** | Stop without error | Automatic | None |
 
@@ -526,3 +530,4 @@ batch.
 | 1.1 | 11 November 2026 | **Two claims corrected after batch 1 was deployed.** §1.5 listed a third role, `psync_warehouse_owner`, and said `psync_pipeline` had no write on the Stage 2 database — but that role owns both databases, wrote the Stage 2 output and applies the warehouse migrations. The table now describes the two roles that actually exist: `psync_pipeline` (owner, migrations, and Stage 3's read-only session) and `psync_loader` (restricted nightly loader, DML only, no privilege on the Stage 2 database), and records that migrations run under a one-off `PSYNC_WAREHOUSE_DSN` override. L6, §3.5, §8.1 and §9 said `SUCCESS`; the column is `load_status` and migration `005` constrains it to lowercase values, so those now read `success`. **Third correction:** §1.1 called `records_output` "the expected counts the load reconciles against", and L4 compared all eight tables. The live batch disproved it — `dim_date` reports `0` because it inserts only dates it has not seen, and the seeded `dim_order_status` has no row at all — so a full-load dimension would have been rejected for a batch that is perfectly loadable. `records_output` is now defined as *rows that run wrote*: facts are compared against it, dimensions are loaded whole and reconciled by L8. Found by verifying the deployed accounts and running the gate against the real batch rather than reading the document. No rule, threshold, table or acceptance criterion changed. |
 | 1.2 | 11 November 2026 | **Dimensions are upserted, not replaced.** §3.1 said all four dimensions were deleted and reloaded, justified by "an incremental upsert would leave behind a version Stage 2 later closed". Both halves were wrong. An upsert sets every column, `valid_to` and `is_current` included, so a closed version is closed in the warehouse too — the replace bought nothing. And it is not possible: `fct_daily_sales` from an earlier day already references `branch_key`, so `DELETE FROM dim_branch` raises a foreign-key violation as soon as the warehouse holds a second day, which is every day after the first. Dimensions now stage into a temporary table by `COPY` and upsert on their primary key; facts still delete by window and bulk-insert. **Second correction:** §3.5 said a `failed` run was "retained for the audit trail", but `load_runs` allows one run-level row per batch, so a retry cannot insert a second — it resets the row and the earlier attempt survives only in that attempt's log narrative. Found when a retry after a lock timeout was refused by the unique index. Both found while building the loader, before either could fail on a second day's data. No rule, threshold, grain or acceptance criterion changed. |
 | 1.3 | 11 November 2026 | **Facts are staged before they are written.** §3.1 had a fact copied straight into the target after the window delete. A `COPY` that way aborts the whole statement on the first row whose foreign key does not resolve — so a single orphan would have taken the batch down, and `load_rejects` could never have held anything, which is what §5's L7 and L13 exist to report. Facts now land in a temporary table first: resolvable rows are inserted, the rest go to `load_rejects` under rule `L-10`, and L7 reconciles the three counts. Found while implementing the reject path. No rule, threshold, grain or acceptance criterion changed. |
+| 1.4 | 11 November 2026 | **The log stem carries the run id, and a refusal is recorded.** §6.2 said the two files share the stem `<batch_id>` and that "a run that fails never produces one". Both stop being true once retries exist: a retried batch would overwrite the narrative of the attempt that failed — the one worth reading — and a `REJECTED` or `MANUAL REVIEW` verdict is a result, not an absence. The stem is now `<batch_id>_<run_id[:8]>`, and the JSON is written whenever a verdict is reached; only a crash leaves none. §8.1 also separates the two rejection paths: a critical check failure stops immediately, while an infrastructure failure — lock timeout, dropped connection, `COPY` error — is retried three times with 30 s backoff, because re-running a rejected batch would only reject it again for the same reason. Found while wiring the log pair. No rule, threshold, grain or acceptance criterion changed. |
