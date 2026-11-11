@@ -17,12 +17,12 @@ import psycopg
 from psync_load.config import Settings
 from psync_load.db import connect_source, connect_warehouse
 from psync_load.handover import FACT_TABLES, REPORTING_TABLES, Handover
-from psync_load.validation.result import CheckResult
+from psync_load.schema import LOAD_COLUMNS
+from psync_load.checks import CheckResult
 
 __all__ = ["run_pre_load_checks"]
 
 BOOKKEEPING_TABLES = ("load_runs", "load_rejects", "load_validation_results")
-LOAD_COLUMNS = frozenset({"load_batch_id", "load_run_id", "loaded_at"})
 
 _COLUMNS_SQL = """
     select column_name, data_type
