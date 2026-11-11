@@ -27,6 +27,7 @@ from psync_load.db import connect_source, connect_warehouse
 from psync_load.handover import FACT_TABLES, REPORTING_TABLES, Handover
 from psync_load.schema import LOAD_COLUMNS
 from psync_load.checks import CheckResult
+from psync_load.decisions import Decision, decide
 
 __all__ = [
     "DIMENSION_TABLES",
@@ -103,6 +104,7 @@ class LoadOutcome:
 
     loads: dict[str, TableLoad] = field(default_factory=dict)
     checks: dict[str, CheckResult] = field(default_factory=dict)
+    decision: Decision | None = None
     committed: bool = False
 
     @property
@@ -301,8 +303,14 @@ def load_batch(
 
         if validate is not None:
             checks = validate(source, target, handover, loads)
-            if any(result.is_critical_failure for result in checks.values()):
+            decision = decide(checks)
+            if not decision.publishes:
                 target.rollback()
-                return LoadOutcome(loads=loads, checks=checks, committed=False)
+                return LoadOutcome(
+                    loads=loads, checks=checks, decision=decision, committed=False
+                )
+            return LoadOutcome(
+                loads=loads, checks=checks, decision=decision, committed=True
+            )
 
     return LoadOutcome(loads=loads, checks=checks, committed=True)

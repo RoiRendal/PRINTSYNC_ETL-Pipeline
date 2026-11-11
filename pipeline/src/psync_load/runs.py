@@ -101,7 +101,7 @@ def record_finish(
                 decision = %s,
                 error_code = %s,
                 error_message = %s
-            where run_id = %s
+            where run_id = %s and table_name is null
             """,
             (
                 datetime.now(timezone.utc),
@@ -116,3 +116,86 @@ def record_finish(
                 run_id,
             ),
         )
+
+
+def record_tables(
+    settings: Settings,
+    run_id: uuid.UUID,
+    handover: Handover,
+    loads: dict[str, "TableLoad"],
+) -> None:
+    """One ``load_runs`` row per target table (doc section 6.1).
+
+    Written on the autocommit connection, like the run-level row, so a rolled-back batch still
+    records what it attempted and how many rows each table carried.
+    """
+    from psync_load.loader import DIMENSION_TABLES
+
+    now = datetime.now(timezone.utc)
+    with _connect(settings) as conn:
+        for table, load in loads.items():
+            load_type = "FULL" if table in DIMENSION_TABLES else "INCREMENTAL"
+            conn.execute(
+                """
+                insert into public.load_runs (
+                    run_id, transformation_run_id, batch_id,
+                    batch_window_start, batch_window_end, table_name, load_type,
+                    load_start_ts, load_end_ts, load_duration_sec,
+                    records_received, records_inserted, records_updated, records_rejected,
+                    load_status, code_version
+                ) values (%s, %s, %s, %s, %s, %s, %s, %s, %s, 0, %s, %s, 0, %s, %s, %s)
+                on conflict (batch_id, coalesce(table_name, '__run__')) do update set
+                    run_id            = excluded.run_id,
+                    load_start_ts     = excluded.load_start_ts,
+                    load_end_ts       = excluded.load_end_ts,
+                    records_received  = excluded.records_received,
+                    records_inserted  = excluded.records_inserted,
+                    records_rejected  = excluded.records_rejected,
+                    load_status       = excluded.load_status,
+                    code_version      = excluded.code_version
+                """,
+                (
+                    run_id,
+                    handover.run_id,
+                    handover.batch_id,
+                    handover.window_start,
+                    handover.window_end,
+                    table,
+                    load_type,
+                    now,
+                    now,
+                    load.received,
+                    load.inserted,
+                    load.rejected,
+                    "success",
+                    code_version(),
+                ),
+            )
+
+
+def record_checks(
+    settings: Settings, batch_id: str, checks: dict[str, "CheckResult"]
+) -> None:
+    """One ``load_validation_results`` row per check (doc section 6.1)."""
+    with _connect(settings) as conn:
+        for check_id, result in checks.items():
+            conn.execute(
+                """
+                insert into public.load_validation_results (
+                    batch_id, check_id, status, severity, message, error_code
+                ) values (%s, %s, %s, %s, %s, %s)
+                on conflict (batch_id, check_id) do update set
+                    status     = excluded.status,
+                    severity   = excluded.severity,
+                    message    = excluded.message,
+                    error_code = excluded.error_code
+                """,
+                (
+                    batch_id,
+                    check_id,
+                    result.status,
+                    result.severity,
+                    result.message,
+                    result.error_code,
+                ),
+            )

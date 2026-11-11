@@ -41,6 +41,8 @@ DEFAULT_CONNECT_TIMEOUT_SECONDS = 10
 DEFAULT_LOCK_TIMEOUT_SECONDS = 30
 DEFAULT_STATEMENT_TIMEOUT_SECONDS = 300
 DEFAULT_MAX_REJECT_RATE_PERCENT = 1
+DEFAULT_MAX_RETRIES = 3
+DEFAULT_RETRY_BACKOFF_SECONDS = 30
 
 # The revision of the rule set in the load document. Bumped whenever a rule's behaviour changes.
 RULES_VERSION = "1.0"
@@ -91,6 +93,8 @@ class Settings(BaseSettings):
     lock_timeout_seconds: int = DEFAULT_LOCK_TIMEOUT_SECONDS
     statement_timeout_seconds: int = DEFAULT_STATEMENT_TIMEOUT_SECONDS
     max_reject_rate_percent: int = DEFAULT_MAX_REJECT_RATE_PERCENT
+    max_retries: int = DEFAULT_MAX_RETRIES
+    retry_backoff_seconds: int = DEFAULT_RETRY_BACKOFF_SECONDS
     connect_timeout_seconds: int = DEFAULT_CONNECT_TIMEOUT_SECONDS
 
     @property
