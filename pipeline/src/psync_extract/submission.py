@@ -42,9 +42,13 @@ REPOSITORY_ROOT = DEFAULT_DATA_DIR.parent
 MANIFEST_NAME = "MANIFEST.txt"
 SUBMISSION_DIR = "submission"
 
-# The four folders a complete bundle carries. Each stage's logs, the handover that links them, and
+# The five folders a complete bundle carries. Each stage's logs, the handover that links them, and
 # the exports that make the quarantine readable without a database.
-EVIDENCE_FOLDERS = ("logs/extract", "logs/transform", "handover", "exports")
+#
+# logs/load joined the list when Stage 3 landed. Without it the archive was still built happily and
+# silently omitted the whole load stage — a bundle that looks complete and is missing a third of the
+# pipeline, which is the failure mode the completeness guard below exists to prevent.
+EVIDENCE_FOLDERS = ("logs/extract", "logs/transform", "logs/load", "handover", "exports")
 
 # Git plumbing rather than evidence, and a half-written log is worse than an absent one.
 _SKIP_NAMES = {".gitkeep"}
