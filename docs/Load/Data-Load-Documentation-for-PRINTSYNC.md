@@ -247,19 +247,22 @@ per run. All three are owned by the pipeline and are never read by reports.
 
 | Table | Load type | Write logic | Match key | On failure |
 | --- | --- | --- | --- | --- |
-| `dim_date` | Full | `DELETE` all, bulk `INSERT` | `date_key` | Roll back whole batch, stop |
-| `dim_branch` | Full | `DELETE` all, bulk `INSERT` | `branch_key` | Roll back whole batch, stop |
-| `dim_item` | Full | `DELETE` all, bulk `INSERT` | `item_key` | Roll back whole batch, stop |
-| `dim_order_status` | Full | `DELETE` all, bulk `INSERT` | `status_key` | Roll back whole batch, stop |
+| `dim_date` | Full | Stage in a temp table, then upsert | `date_key` | Roll back whole batch, stop |
+| `dim_branch` | Full | Stage in a temp table, then upsert | `branch_key` | Roll back whole batch, stop |
+| `dim_item` | Full | Stage in a temp table, then upsert | `item_key` | Roll back whole batch, stop |
+| `dim_order_status` | Full | Stage in a temp table, then upsert | `status_key` | Roll back whole batch, stop |
 | `fct_daily_sales` | Incremental | `DELETE` where `business_date` in window, bulk `INSERT` | `(business_date, branch_key)` | Roll back whole batch, stop |
 | `fct_daily_product_demand` | Incremental | `DELETE` where `business_date` in window, bulk `INSERT` | `(business_date, branch_key, item_key)` | Roll back whole batch, stop |
 | `fct_daily_stock_snapshot` | Incremental | `DELETE` where `business_date` in window, bulk `INSERT` | `(business_date, branch_key, item_key)` | Roll back whole batch, stop |
 | `fct_daily_order_status` | Incremental | `DELETE` where `business_date` in window, bulk `INSERT` | `(business_date, status_key)` | Roll back whole batch, stop |
 
-**Why dimensions are a full load.** They are small — 79 rows in the measured batch — and they carry
-SCD Type 2 history. An incremental upsert would leave behind a version that Stage 2 later closed,
-so the warehouse would disagree with the source dimension. Replacing the whole table each night is
-cheaper than reconciling it and cannot drift.
+**Why dimensions are upserted, not replaced.** The first draft of this section said they were
+replaced wholesale, and that is wrong twice over. An upsert sets **every** column, `valid_to` and
+`is_current` included, so a version Stage 2 closed is closed here too — the replace bought nothing.
+And a replace is not even possible: facts from earlier days already reference those keys, so
+`DELETE FROM dim_branch` raises a foreign-key violation the moment the warehouse holds a second day.
+Upserting on the primary key is what Stage 2 itself does, keeps history intact, and cannot orphan a
+fact. Rows still travel by bulk `COPY` — into a temporary table first, because `COPY` cannot upsert.
 
 **Why facts are incremental.** Facts accumulate one day at a time. Only the batch window is
 replaced, so earlier published days are untouched. `load_batch_id` still records which batch wrote
@@ -311,8 +314,12 @@ Loading the same batch twice therefore writes the same rows twice, not two sets.
 L6 refuses to publish a batch already recorded as `success` in `load_runs` — a **deliberate
 difference from Stage 2**, which rebuilds on a rerun. Here the reporting database is the published
 product; a second successful load of the same batch is a duplicate publication, and a reader should
-say so rather than silently doing it. Recovery after a `FAILED` or `REJECTED` batch is allowed:
-there is nothing to duplicate, because the failed transaction rolled back.
+say so rather than silently doing it. Recovery after a `failed` batch is allowed: there is nothing
+to duplicate, because the failed transaction rolled back.
+
+`load_runs` allows **one run-level row per batch**, so a retry does not add a second one — it resets
+the row it already has. The earlier attempt is not lost: it stays in that attempt's log narrative
+(§6.2). The ledger says what the batch's state *is*; the logs say how many times it was tried.
 
 ---
 
@@ -508,3 +515,4 @@ batch.
 | --- | --- | --- |
 | 1.0 | 11 November 2026 | Initial specification for Stage 3, written against the Laboratory Activity 5 template. Defines `psync_warehouse` as a separate reporting database, the ledger row as the handover, bulk `COPY` loading, L1–L13 validation, `load_runs` metadata, the 90-day / 24-month retention split, and the acceptance and rollback rules. No rule, threshold or table changes from an earlier revision — this is the first. |
 | 1.1 | 11 November 2026 | **Two claims corrected after batch 1 was deployed.** §1.5 listed a third role, `psync_warehouse_owner`, and said `psync_pipeline` had no write on the Stage 2 database — but that role owns both databases, wrote the Stage 2 output and applies the warehouse migrations. The table now describes the two roles that actually exist: `psync_pipeline` (owner, migrations, and Stage 3's read-only session) and `psync_loader` (restricted nightly loader, DML only, no privilege on the Stage 2 database), and records that migrations run under a one-off `PSYNC_WAREHOUSE_DSN` override. L6, §3.5, §8.1 and §9 said `SUCCESS`; the column is `load_status` and migration `005` constrains it to lowercase values, so those now read `success`. **Third correction:** §1.1 called `records_output` "the expected counts the load reconciles against", and L4 compared all eight tables. The live batch disproved it — `dim_date` reports `0` because it inserts only dates it has not seen, and the seeded `dim_order_status` has no row at all — so a full-load dimension would have been rejected for a batch that is perfectly loadable. `records_output` is now defined as *rows that run wrote*: facts are compared against it, dimensions are loaded whole and reconciled by L8. Found by verifying the deployed accounts and running the gate against the real batch rather than reading the document. No rule, threshold, table or acceptance criterion changed. |
+| 1.2 | 11 November 2026 | **Dimensions are upserted, not replaced.** §3.1 said all four dimensions were deleted and reloaded, justified by "an incremental upsert would leave behind a version Stage 2 later closed". Both halves were wrong. An upsert sets every column, `valid_to` and `is_current` included, so a closed version is closed in the warehouse too — the replace bought nothing. And it is not possible: `fct_daily_sales` from an earlier day already references `branch_key`, so `DELETE FROM dim_branch` raises a foreign-key violation as soon as the warehouse holds a second day, which is every day after the first. Dimensions now stage into a temporary table by `COPY` and upsert on their primary key; facts still delete by window and bulk-insert. **Second correction:** §3.5 said a `failed` run was "retained for the audit trail", but `load_runs` allows one run-level row per batch, so a retry cannot insert a second — it resets the row and the earlier attempt survives only in that attempt's log narrative. Found when a retry after a lock timeout was refused by the unique index. Both found while building the loader, before either could fail on a second day's data. No rule, threshold, grain or acceptance criterion changed. |
