@@ -15,7 +15,7 @@ Stage 3 is the last stage. It takes the eight business-ready tables Stage 2 publ
 `psync_analytics` and loads them into a separate reporting database, `psync_warehouse`, then proves
 that the copy is complete, accurate and traceable.
 
-The work is split into **six batches, two issues each**, starting at issue **#123**. Two or three
+The work is split into **six batches, two issues each**, starting at issue **#123**. Issue and PR numbers share one GitHub sequence, so each batch consumes three: two issues and the PR that closes them. Two or three
 issues per PR keeps a pull request readable for the professor, who reads PRs rather than commits.
 Each batch is one coherent piece of the specification: by the end of batch 6, every one of the nine
 sections has code or evidence behind it.
@@ -63,7 +63,7 @@ The same order that carried Stages 1 and 2 through ten batches without a merge c
 
 ## 4. The batches
 
-### Batch 1 — Foundation (issues #123–#124)
+### Batch 1 — Foundation (issues #123–#124, PR #125)
 
 - **#123** Scaffold `psync_load`: package, `__version__`, `config.py`, CLI entry point.
 - **#124** Create `psync_warehouse`: one-off `pipeline/warehouse_bootstrap.sql` for the database and
@@ -75,53 +75,53 @@ The same order that carried Stages 1 and 2 through ten batches without a merge c
 second run a no-op, and `psync_loader` can `INSERT` while `psync_pipeline` cannot write the
 warehouse.
 
-### Batch 2 — The input gate (issues #125–#126)
+### Batch 2 — The input gate (issues #126–#127, PR #128)
 
-- **#125** Input contract reader: resolve the run-level `transformation_runs` row for a `batch_id`,
+- **#126** Input contract reader: resolve the run-level `transformation_runs` row for a `batch_id`,
   its window, decision and per-table `records_output`; refuse anything not `APPROVED`.
-- **#126** L1–L6 pre-load checks with the shared `CheckResult` shape (id, status, severity,
+- **#127** L1–L6 pre-load checks with the shared `CheckResult` shape (id, status, severity,
   message, error code), run before the target transaction opens.
 
 *Evidence:* an approved batch passes all six; an unapproved batch is refused before a connection to
 the warehouse is opened; a doctored count fails L4.
 
-### Batch 3 — The loader (issues #127–#128)
+### Batch 3 — The loader (issues #129–#130, PR #131)
 
-- **#127** Bulk `COPY TO STDOUT` → `COPY FROM STDIN` for one table, with the three
+- **#129** Bulk `COPY TO STDOUT` → `COPY FROM STDIN` for one table, with the three
   `load_batch_id` / `load_run_id` / `loaded_at` columns attached.
-- **#128** Orchestrate all eight in the order of §1.4 — dimensions first, facts second, deletes in
+- **#130** Orchestrate all eight in the order of §1.4 — dimensions first, facts second, deletes in
   reverse — in one transaction with `lock_timeout` and `statement_timeout`, rolling back whole on
   any failure, and refusing to duplicate a `SUCCESS` batch.
 
 *Evidence:* 150 rows land in the warehouse; a deliberately broken constraint rolls the whole batch
 back leaving zero rows; running the same batch twice is refused.
 
-### Batch 4 — Reconciliation (issues #129–#130)
+### Batch 4 — Reconciliation (issues #132–#133, PR #134)
 
-- **#129** L7–L12: record, row-count, key-uniqueness, referential-integrity, null and amount
+- **#132** L7–L12: record, row-count, key-uniqueness, referential-integrity, null and amount
   reconciliation, each with its severity.
-- **#130** `load_rejects` and L13: a row the load cannot write is recorded with `batch_id`,
+- **#133** `load_rejects` and L13: a row the load cannot write is recorded with `batch_id`,
   `table_name`, `rule_id`, `reason`, `payload`; rejects within 1 % warn, above 1 % fail.
 
 *Evidence:* `received = inserted + rejected`, ₱10,100.00 net revenue matches to the cent, and a
 seeded orphan is rejected rather than given an Unknown member.
 
-### Batch 5 — Recording and deciding (issues #131–#132)
+### Batch 5 — Recording and deciding (issues #135–#136, PR #137)
 
-- **#131** `load_runs` and `load_validation_results`: the run-level row plus one row per table with
+- **#135** `load_runs` and `load_validation_results`: the run-level row plus one row per table with
   all fields in §6.1.
-- **#132** The decision engine and the two log files: `APPROVED`, `APPROVED WITH WARNING`,
+- **#136** The decision engine and the two log files: `APPROVED`, `APPROVED WITH WARNING`,
   `MANUAL REVIEW`, `REJECTED`, three retries with 30 s backoff, and the `.log`/`.json` pair with
   `[Load]` on every line.
 
 *Evidence:* a successful run writes both files and a `success` row; a failed run leaves the
 narrative ending in `ERROR` with no JSON; the log's counts agree with the ledger.
 
-### Batch 6 — Retention and submission (issues #133–#134)
+### Batch 6 — Retention and submission (issues #138–#139, PR #140)
 
-- **#133** Snapshots, `prune_load_logs`, and the retention split: 90 days for detail, 24 months for
+- **#138** Snapshots, `prune_load_logs`, and the retention split: 90 days for detail, 24 months for
   the ledger and rejects, scoped so the job cannot reach `handover/`, `exports/` or `submission/`.
-- **#134** §9 common-problems review, README update for Stage 3, and the three deliverables in
+- **#139** §9 common-problems review, README update for Stage 3, and the three deliverables in
   `Lab 5/` — Markdown, DOCX and PDF — using a copy of `Lab 4/md_to_docx.py`.
 
 *Evidence:* the prune job reports what it deleted and leaves the handover alone; the submission zip
