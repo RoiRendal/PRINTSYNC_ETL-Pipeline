@@ -89,12 +89,14 @@ the warehouse is opened; a doctored count fails L4.
 
 - **#129** Bulk `COPY TO STDOUT` → `COPY FROM STDIN` for one table, with the three
   `load_batch_id` / `load_run_id` / `loaded_at` columns attached.
-- **#130** Orchestrate all eight in the order of §1.4 — dimensions first, facts second, deletes in
-  reverse — in one transaction with `lock_timeout` and `statement_timeout`, rolling back whole on
-  any failure, and refusing to duplicate a `SUCCESS` batch.
+- **#130** Orchestrate all eight in the order of §1.4 — dimensions upserted first, then each fact's
+  window replaced — in one transaction with `lock_timeout` and `statement_timeout`, rolling back
+  whole on any failure, and refusing to duplicate a successful batch. Includes the run-level
+  `load_runs` row, written outside the data transaction so a failed attempt leaves evidence.
 
-*Evidence:* 150 rows land in the warehouse; a deliberately broken constraint rolls the whole batch
-back leaving zero rows; running the same batch twice is refused.
+*Evidence:* 150 rows land in the warehouse and match the source to the cent; an exclusive lock on a
+fact table rolls the whole batch back leaving zero rows, dimensions included; running the same
+batch twice is refused by L6.
 
 ### Batch 4 — Reconciliation (issues #132–#133, PR #134)
 
@@ -108,8 +110,8 @@ seeded orphan is rejected rather than given an Unknown member.
 
 ### Batch 5 — Recording and deciding (issues #135–#136, PR #137)
 
-- **#135** `load_runs` and `load_validation_results`: the run-level row plus one row per table with
-  all fields in §6.1.
+- **#135** The per-table `load_runs` rows and `load_validation_results`: one row per table with all
+  the fields in §6.1, and the L1–L13 outcomes per check.
 - **#136** The decision engine and the two log files: `APPROVED`, `APPROVED WITH WARNING`,
   `MANUAL REVIEW`, `REJECTED`, three retries with 30 s backoff, and the `.log`/`.json` pair with
   `[Load]` on every line.
