@@ -34,13 +34,17 @@ trigger is created or changed. See §1.6 of the specification.
 All pipeline code lives in `pipeline/`, so work from there. Each stage is one command:
 
 ```bash
-python -m psync_extract   --date 2026-10-18   # Stage 1: extract one business day
-python -m psync_transform --date 2026-10-18   # Stage 2: transform that day's handover
+python -m psync_extract   --date 2026-10-18                  # Stage 1: extract one business day
+python -m psync_transform --date 2026-10-18                  # Stage 2: transform that day's handover
+python -m psync_load      --batch TRF_20261018_1463a0d4      # Stage 3: load an approved batch
 ```
 
-Both exit 0 when the run may be handed over and 1 when it may not, so a scheduler notices.
-Stage 2 reads nothing from PRINTSYNC — its input is Stage 1's handover (the staged rows selected
-by `run_id`, plus the manifest Stage 1 writes on approval).
+Each exits 0 when its result may be handed on and 1 when it may not, so a scheduler notices.
+Stage 2 reads nothing from PRINTSYNC — its input is Stage 1's handover (the staged rows selected by
+`run_id`, plus the manifest Stage 1 writes on approval). Stage 3 reads nothing from PRINTSYNC
+either: its input is Stage 2's ledger row for one `batch_id`, and it writes to a **separate**
+database, `psync_warehouse`, so the reporting tables never share a connection with a batch in
+progress. It loads the whole batch in one transaction and verifies it before committing.
 
 ## The evidence folder
 
@@ -50,8 +54,10 @@ the repository's `data/`). The layout is tracked in git; the artifacts are not.
 ```
 data/logs/extract/        one .log and one .json per extraction run, sharing a stem
 data/logs/transform/      the same pair per transformation batch
+data/logs/load/           the same pair per load attempt, stemmed on batch id and run id
 data/handover/            the manifest Stage 1 writes on approval and Stage 2 reads
 data/exports/<batch_id>/  the quarantine as CSV, with a reconciliation and a README
+data/snapshots/<batch>/   the reporting tables as CSV, taken before a load writes anything
 data/packs/               one business day's data and its logs, zipped for inspection
 data/submission/          a dated zip of the whole folder
 ```
@@ -63,6 +69,9 @@ python -m psync_transform --export TRF_20261018_1463a0d4   # the quarantine, as 
 python -m psync_extract.datapack --date 2026-10-18         # the day's data and logs, together
 python -m psync_extract.submission --as-of 2026-11-01      # the whole folder, as one zip
 ```
+
+A load's snapshot lives seven days and its logs ninety; the `load_runs` ledger and its rejects
+live two years, because they are the evidence that a published day was produced correctly.
 
 A run leaves **two** log files with one stem. `<stem>.json` is the record: written once, at the
 end, atomically. `<stem>.log` is the narrative: one line per step with the time and how long it
