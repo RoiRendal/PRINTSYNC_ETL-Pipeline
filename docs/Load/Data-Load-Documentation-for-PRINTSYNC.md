@@ -60,7 +60,7 @@ the handover's rows, keys and amounts. Nothing is recomputed from the source tab
 | **Batch ID** | `transformation_runs.batch_id`, e.g. `TRF_20261024_d031cb6c`. This is the key the whole load is organised around. |
 | **Batch window** | `batch_window_start` … `batch_window_end`, e.g. `2026-10-21` … `2026-10-24`. Facts are loaded for this window; dimensions are loaded in full. |
 | **Handover status** | Only `APPROVED` or `APPROVED WITH WARNING` with `transformation_status = 'success'` may be loaded (Stage 2 §10.1). A `REJECTED`, `MANUAL REVIEW`, `failed` or `skipped` run has no data to publish. |
-| **Counts** | `transformation_runs` holds one row per output table with `records_output`. Those are the expected counts the load reconciles against (§5). |
+| **Counts** | `transformation_runs` holds one row per table the transformation wrote, with `records_output`. For a **fact**, that is exactly the rows written for the window, and it is the number the load must reproduce. For a **dimension** it is only what that run inserted: `dim_date` reports `0` on a re-run because it inserts nothing it has already seen, and the seeded `dim_order_status` has no row at all. A dimension is therefore loaded **in full**, and its expected size is the source table's row count at load time, never `records_output`. L4 compares facts only; L8 reconciles dimensions after the load. |
 
 The one real batch measured so far is `TRF_20261024_d031cb6c`, from the live PRINTSYNC system:
 150 published rows — `dim_date` 11, `dim_branch` 2, `dim_item` 60, `dim_order_status` 6,
@@ -120,9 +120,13 @@ rather than an overnight hang.
 
 | Account | Used for | Privileges |
 | --- | --- | --- |
-| `psync_pipeline` | Reading the Stage 2 output | `CONNECT` on `psync_analytics`, `USAGE` on `public`, `SELECT` on the eight mart tables and on `transformation_runs`. No write on this database. |
-| `psync_loader` | Writing the reporting database | `CONNECT` on `psync_warehouse`, `USAGE` on `public`, `SELECT` / `INSERT` / `DELETE` / `UPDATE` on the eight reporting tables and the three bookkeeping tables. No `CREATE`, no `DROP`, no superuser. |
-| `psync_warehouse_owner` | Applying migrations | Owns the schema. Used only by the migration command, never by a nightly run. |
+| `psync_pipeline` | Stages 1 and 2 writing their own output; Stage 3 **reading** that output; applying warehouse migrations | Owns `psync_analytics` / `psync_analytics_live` and `psync_warehouse`. On the Stage 2 database it holds full DML — it is the role that wrote the staging and mart tables — while Stage 3's connection sets `default_transaction_read_only = on` for the duration of its read. On the warehouse it holds DDL, because it creates the tables. |
+| `psync_loader` | Nightly loads only | `CONNECT` on `psync_warehouse`, `USAGE` on `public`, `SELECT` / `INSERT` / `DELETE` / `UPDATE` on the eight reporting tables and the three bookkeeping tables. No `CREATE`, no `DROP`, no superuser, and **no privilege at all** on the Stage 2 database. This is the role in `PSYNC_WAREHOUSE_DSN`. |
+
+There is no third role. `psync_pipeline` is the owner; migrations are applied under it through a one-off
+`PSYNC_WAREHOUSE_DSN` override by the operator, and the nightly load never sees that connection
+string. A `psync_loader` attempt to `CREATE TABLE` is refused by PostgreSQL with
+`InsufficientPrivilege`.
 
 ---
 
@@ -304,7 +308,7 @@ A batch is identified by `batch_id`. Before loading facts, the loader deletes ev
 `business_date` falls in the batch window; before loading dimensions, it deletes the whole table.
 Loading the same batch twice therefore writes the same rows twice, not two sets.
 
-L6 refuses to publish a batch already recorded as `SUCCESS` in `load_runs` — a **deliberate
+L6 refuses to publish a batch already recorded as `success` in `load_runs` — a **deliberate
 difference from Stage 2**, which rebuilds on a rerun. Here the reporting database is the published
 product; a second successful load of the same batch is a duplicate publication, and a reader should
 say so rather than silently doing it. Recovery after a `FAILED` or `REJECTED` batch is allowed:
@@ -323,13 +327,15 @@ writes.
 | L1 | Target connection and write permission | `psync_warehouse` | Prove the load can start and write | Connection succeeds within `connect_timeout`; `has_table_privilege` reports `INSERT`, `UPDATE`, `DELETE` on all eight tables for the current role | Critical |
 | L2 | Schema match | All eight target tables | Prevent type or column errors | Every required column exists with its expected type family; every constraint and index named in §2 is present. Extra columns are ignored | Critical |
 | L3 | Handover status | `transformation_runs` run-level row | Load approved data only | A row exists for `batch_id`, `decision IN ('APPROVED', 'APPROVED WITH WARNING')`, `transformation_status = 'success'` | Critical |
-| L4 | Input record counts | The eight source tables and the per-table `transformation_runs` rows | Confirm the handover's numbers are still true | For each table, `count(*)` of the rows in scope equals `records_output` in the handover. A mismatch is not repaired | Critical |
+| L4 | Input record counts | The four fact tables and their `transformation_runs` rows | Confirm the handover's numbers are still true | For each fact table, `count(*)` of the rows in the window equals `records_output`. Dimensions are **not** compared: their `records_output` counts rows that run inserted, not rows to load (§1.1), and L8 reconciles them after the load. A mismatch is not repaired | Critical |
 | L5 | Sufficient storage | Target tablespace | Avoid a half-written load | Free space ≥ 100 MB and ≥ 3 × the size of the eight source tables, measured before the transaction | Critical |
-| L6 | Duplicate batch | `load_runs.batch_id` | Avoid publishing twice | No run-level row with this `batch_id` and `status = 'SUCCESS'`. A prior `FAILED`/`REJECTED` row is allowed and is retained for the audit trail | Critical |
+| L6 | Duplicate batch | `load_runs.batch_id` | Avoid publishing twice | No run-level row with this `batch_id` and `load_status = 'success'`. A prior `failed` status or a `REJECTED` decision is allowed and is retained for the audit trail | Critical |
 
 L4 is the one that most often catches a real problem: if Stage 2 was re-run between the handover
 and the load, the counts no longer describe the rows. The load refuses rather than loading something
-the handover did not certify.
+the handover did not certify. It deliberately covers only the four facts — a dimension's
+`records_output` is not the number of rows to load (§1.1), and comparing it would reject a batch
+that is perfectly loadable.
 
 ---
 
@@ -437,7 +443,7 @@ Following Stages 1 and 2, a run leaves **two** files in `<data dir>/logs/load/`,
 | One or more non-critical warnings beyond tolerance, or a small count difference within tolerance | A human should look before dashboards read it | **MANUAL REVIEW** | Roll back, hold publication, notify the data team lead | Manual | Data team lead approves or rejects |
 | Any critical check fails (L1–L12), or the transaction raises | The batch cannot be trusted | **REJECTED** | Roll back, record `failed`, retry up to **3 times** with 30 s backoff, then stop and alert | Automatic stop; manual restart | Data team investigates |
 | The handover is not `APPROVED` (L3) | No approved input | **REJECTED** | Stop before the transaction opens | Automatic | None |
-| Batch already loaded with `SUCCESS` (L6) | Would duplicate a publication | **REJECTED** | Stop without error | Automatic | None |
+| Batch already loaded with `success` (L6) | Would duplicate a publication | **REJECTED** | Stop without error | Automatic | None |
 
 ### 8.2 Who decides
 
@@ -482,7 +488,7 @@ batch.
 
 | Problem | Possible cause | Impact on the load | Mitigation |
 | --- | --- | --- | --- |
-| Duplicate rows after a rerun | Same `batch_id` loaded twice because the success row was not checked | Inflated totals in every dashboard | L6 refuses a batch already `SUCCESS`; facts are deleted for the window before insert (§3.5) |
+| Duplicate rows after a rerun | Same `batch_id` loaded twice because the success row was not checked | Inflated totals in every dashboard | L6 refuses a batch already `success`; facts are deleted for the window before insert (§3.5) |
 | Foreign key violation | A fact was copied before its dimension, or a dimension row was dropped by the full replace | Load fails, or an orphan fact reaches a report | Fixed order: dimensions first, facts second; deletes in reverse; L10 checks 100 % resolution before commit |
 | Partial load after a crash | Each table committed separately | Some tables show the new day and others the old one | One transaction for the whole batch (§3.4); an uncommitted transaction is rolled back when the connection closes |
 | Target locked by a long report | A dashboard query holds a lock during the 04:00 window | Load waits, then times out mid-batch | 04:00 schedule, `SET LOCAL lock_timeout = '30s'`, and `statement_timeout = '300s'`; a timeout fails cleanly and retries with backoff |
@@ -501,3 +507,4 @@ batch.
 | Revision | Date | Change |
 | --- | --- | --- |
 | 1.0 | 11 November 2026 | Initial specification for Stage 3, written against the Laboratory Activity 5 template. Defines `psync_warehouse` as a separate reporting database, the ledger row as the handover, bulk `COPY` loading, L1–L13 validation, `load_runs` metadata, the 90-day / 24-month retention split, and the acceptance and rollback rules. No rule, threshold or table changes from an earlier revision — this is the first. |
+| 1.1 | 11 November 2026 | **Two claims corrected after batch 1 was deployed.** §1.5 listed a third role, `psync_warehouse_owner`, and said `psync_pipeline` had no write on the Stage 2 database — but that role owns both databases, wrote the Stage 2 output and applies the warehouse migrations. The table now describes the two roles that actually exist: `psync_pipeline` (owner, migrations, and Stage 3's read-only session) and `psync_loader` (restricted nightly loader, DML only, no privilege on the Stage 2 database), and records that migrations run under a one-off `PSYNC_WAREHOUSE_DSN` override. L6, §3.5, §8.1 and §9 said `SUCCESS`; the column is `load_status` and migration `005` constrains it to lowercase values, so those now read `success`. **Third correction:** §1.1 called `records_output` "the expected counts the load reconciles against", and L4 compared all eight tables. The live batch disproved it — `dim_date` reports `0` because it inserts only dates it has not seen, and the seeded `dim_order_status` has no row at all — so a full-load dimension would have been rejected for a batch that is perfectly loadable. `records_output` is now defined as *rows that run wrote*: facts are compared against it, dimensions are loaded whole and reconciled by L8. Found by verifying the deployed accounts and running the gate against the real batch rather than reading the document. No rule, threshold, table or acceptance criterion changed. |
