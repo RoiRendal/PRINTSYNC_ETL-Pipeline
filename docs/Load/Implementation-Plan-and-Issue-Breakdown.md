@@ -100,10 +100,11 @@ batch twice is refused by L6.
 
 ### Batch 4 — Reconciliation (issues #132–#133, PR #134)
 
-- **#132** L7–L12: record, row-count, key-uniqueness, referential-integrity, null and amount
-  reconciliation, each with its severity.
-- **#133** `load_rejects` and L13: a row the load cannot write is recorded with `batch_id`,
-  `table_name`, `rule_id`, `reason`, `payload`; rejects within 1 % warn, above 1 % fail.
+- **#132** The reject path: facts stage into a temporary table, the rows whose foreign keys resolve
+  are inserted, and the rest are written to `load_rejects` with rule `L-10`. A `COPY` straight into
+  the table would abort the whole statement on the first orphan.
+- **#133** L7–L13: reconciliation, row count, key uniqueness, referential integrity, nulls, amount
+  totals and the reject rate, each with its severity, run inside the transaction before `COMMIT`.
 
 *Evidence:* `received = inserted + rejected`, ₱10,100.00 net revenue matches to the cent, and a
 seeded orphan is rejected rather than given an Unknown member.
