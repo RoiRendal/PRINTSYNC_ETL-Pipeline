@@ -166,7 +166,7 @@ def _l13_errors(loads: dict[str, TableLoad], max_percent: int) -> CheckResult:
     received = sum(load.received for load in loads.values())
     rejected = sum(load.rejected for load in loads.values())
     if rejected == 0:
-        return _ok("L13", "no row was rejected")
+        return CheckResult("L13", "PASS", "warning", "no row was rejected")
     share = rejected * 100 / received if received else 0
     message = f"{rejected} of {received} rows rejected ({share:.2f} %)"
     if share > max_percent:
