@@ -26,6 +26,7 @@ from psync_load.config import Settings
 from psync_load.db import connect_source, connect_warehouse
 from psync_load.handover import FACT_TABLES, REPORTING_TABLES, Handover
 from psync_load.schema import LOAD_COLUMNS
+from psync_load.snapshot import write_snapshot
 from psync_load.checks import CheckResult
 from psync_load.decisions import Decision, decide
 
@@ -294,6 +295,9 @@ def load_batch(
         target.execute(
             f"set local statement_timeout = {int(settings.statement_timeout_seconds) * 1000}"
         )
+
+        # Before the first write, so the snapshot is the state a mistake would be undone to.
+        write_snapshot(target, settings, handover)
 
         for table in DIMENSION_TABLES:
             loads[table] = _upsert_dimension(source, target, table, handover, run_id)
