@@ -29,5 +29,7 @@ ALTER DEFAULT PRIVILEGES IN SCHEMA public
 ALTER DEFAULT PRIVILEGES IN SCHEMA public
     GRANT USAGE, SELECT ON SEQUENCES TO psync_loader;
 
--- psync_pipeline keeps its read-only role on the Stage 2 database. It is deliberately granted no
--- privilege on psync_warehouse: a Stage 2 run must not be able to write the reporting tables.
+-- psync_pipeline is the owner: it created this database, it applies the migrations, and it is the
+-- role Stages 1 and 2 use to write their own output. Stage 3 uses it only to read that output, in a
+-- session that sets default_transaction_read_only = on, and to apply migrations under a one-off
+-- DSN override. The nightly load never sees this connection string — it uses psync_loader above.
